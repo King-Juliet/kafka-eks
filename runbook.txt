@@ -149,7 +149,7 @@ PHASE 1 - CLUSTER AND CONTROLLERS  (terraform/<region>)
 PHASE 2 - ARGO CD  (yours) AND GITOPS REPO
 --------------------------------------------------------------------------------
 8.  Push this repo to GitHub (branch main)
-    Replace https://github.com/YOUR-ORG/YOUR-REPO.git in:
+    Replace https://github.com/King-Juliet/kafka-eks.git in:
       gitops/bootstrap/root-app.yaml
       gitops/argocd/projects/kafka.yaml
       gitops/argocd/apps/kafka-prereqs.yaml  kafka-cluster.yaml  kafka-secrets.yaml  gateway.yaml
