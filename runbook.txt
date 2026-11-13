@@ -1,7 +1,7 @@
 EKS + KARPENTER + STRIMZI KAFKA - BUILD SHEET
 ================================================================================
 Account ID ......... NOT PROVIDED  (aws sts get-caller-identity --query Account)
-Region ............. ASSUMPTION eu-west-1 (you did not give one). Change it in step 3.
+Region ............. ASSUMPTION us-east-1 (you did not give one). Change it in step 3.
 Scope .............. IN : VPC, bastion (Session Manager), EKS (no Auto Mode), Karpenter, LBC, ESO, Pod Identity,
                          Gateway API (ALB) for HTTP endpoints, Strimzi Kafka via Argo CD
                     LATER: producer/consumer ASGs (yours), private-subnet move, monitoring,
@@ -37,7 +37,7 @@ PHASE 0 - LOCAL PREP (your Mac)
     (dig, used in step 5c, ships with macOS. Your AWS identity needs ssm:StartSession; admins have it.)
     terraform version ...... must be >= 1.10
     aws sts get-caller-identity ...... must show the account you intend to use
-    export AWS_REGION=eu-west-1            # ASSUMPTION - use the region you really want
+    export AWS_REGION=us-east-1            # ASSUMPTION - use the region you really want
     export AWS_DEFAULT_REGION=$AWS_REGION
     cd <path to the eks-kafka folder> && export REPO=$PWD      # every cd below starts from $REPO
 
@@ -53,9 +53,9 @@ PHASE 0 - LOCAL PREP (your Mac)
       BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
     (us-east-1 only: delete the --create-bucket-configuration line)
     (Already have a state bucket? Skip the five commands above, set BUCKET=<your bucket> and carry on.)
-    Region other than eu-west-1? Rename the folder and swap the name inside it (macOS sed; Linux: drop the ''):
-      mv $REPO/terraform/eu-west-1 $REPO/terraform/$AWS_REGION
-      sed -i '' "s/eu-west-1/$AWS_REGION/g" $REPO/terraform/$AWS_REGION/*.tf
+    Region other than us-east-1? Rename the folder and swap the name inside it (macOS sed; Linux: drop the ''):
+      mv $REPO/terraform/us-east-1 $REPO/terraform/$AWS_REGION
+      sed -i '' "s/us-east-1/$AWS_REGION/g" $REPO/terraform/$AWS_REGION/*.tf
     (Folder already named after your region? Skip the mv and the sed, but check by hand that the default of
      var.region in variables.tf and the region in backend.tf both say the same region as the folder.)
     Then, in every case:

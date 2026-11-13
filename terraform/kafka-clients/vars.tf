@@ -23,7 +23,7 @@ variable "assign_public_ip" {
 }
 
 variable "bootstrap_servers" {
-  description = "host:port of the external listener bootstrap NLB, e.g. xxxx.elb.eu-west-1.amazonaws.com:9094"
+  description = "host:port of the external listener bootstrap NLB, e.g. xxxx.elb.us-east-1.amazonaws.com:9094"
   type        = string
 }
 

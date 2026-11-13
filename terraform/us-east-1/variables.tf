@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------- general
 variable "region" {
-  description = "AWS region. ASSUMPTION: eu-west-1 (not given). The folder name, the region in backend.tf and this value must all match; a check warns if they do not."
+  description = "AWS region. ASSUMPTION: us-east-1 (not given). The folder name, the region in backend.tf and this value must all match; a check warns if they do not."
   type        = string
-  default     = "eu-west-1"
+  default     = "us-east-1"
 }
 
 variable "cluster_name" {
