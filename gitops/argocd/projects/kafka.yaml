@@ -1,0 +1,51 @@
+# AppProject = the fence around the Kafka apps: only these repos, only these namespaces,
+# only these cluster-scoped kinds.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: kafka
+  namespace: argocd
+spec:
+  description: Strimzi operator, Kafka cluster and its secrets
+  sourceRepos:
+    - https://github.com/YOUR-ORG/YOUR-REPO.git
+    - quay.io/strimzi-helm
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: kafka
+    - server: https://kubernetes.default.svc
+      namespace: strimzi-system
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: scheduling.k8s.io
+      kind: PriorityClass
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: Service
+    - group: apps
+      kind: Deployment
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: coordination.k8s.io
+      kind: Lease
+    - group: kafka.strimzi.io
+      kind: "*"
+    - group: external-secrets.io
+      kind: "*"

@@ -1,0 +1,129 @@
+# The Kafka cluster definition (KRaft mode - no ZooKeeper). Brokers and controllers are NOT defined here:
+# they are two separate KafkaNodePools (nodepool-controllers.yaml, nodepool-brokers.yaml) so they get
+# different nodes, different sizes and different scaling.
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: kafka-test
+  namespace: kafka
+  annotations:
+    # Argo CD must never prune or cascade-delete the cluster (and its data) by accident.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  kafka:
+    version: 4.3.2 # supported + default in Strimzi 1.3.1
+    metadataVersion: 4.3-IV0
+
+    # Spread replicas across AZs (sets broker.rack from the node's zone label).
+    rack:
+      type: topology-label
+      topologyKey: topology.kubernetes.io/zone
+
+    listeners:
+      # In-cluster clients (9093): TLS + SCRAM.
+      - name: internal
+        port: 9093
+        type: internal
+        tls: true
+        authentication:
+          type: scram-sha-512
+
+      # Clients outside the cluster, e.g. producer/consumer apps on EC2/ASGs you add later (9094): TLS + SCRAM through internal NLBs.
+      # Strimzi creates one NLB for bootstrap and one per broker (4 NLBs with 3 brokers) - that is by design.
+      - name: external
+        port: 9094
+        type: loadbalancer
+        tls: true
+        authentication:
+          type: scram-sha-512
+        networkPolicyPeers:
+          - ipBlock:
+              cidr: 10.20.0.0/16 # ASSUMPTION: must equal terraform var.vpc_cidr
+        configuration:
+          class: service.k8s.aws/nlb # hand these Services to the AWS Load Balancer Controller
+          bootstrap:
+            annotations:
+              service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+              service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+          perBrokerAnnotationsTemplate:
+            service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+            service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+
+    authorization:
+      type: simple
+      superUsers:
+        - admin
+
+    config:
+      # Durability: survive the loss of one broker (RF 3, min ISR 2) without losing acknowledged writes.
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      unclean.leader.election.enable: "false"
+      # Topics are created through KafkaTopic resources (Git), not by a stray client.
+      auto.create.topics.enable: "false"
+
+  entityOperator:
+    topicOperator:
+      resources:
+        requests: { cpu: 100m, memory: 256Mi }
+        limits: { memory: 256Mi }
+    userOperator:
+      resources:
+        requests: { cpu: 100m, memory: 256Mi }
+        limits: { memory: 256Mi }
+    template:
+      pod:
+        # Runs on the Karpenter "general" pool, never on Kafka nodes or the system nodes.
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: workload
+                      operator: In
+                      values: ["general"]
+
+  # Cruise Control = the broker-scaling brain. When you raise the broker count in Git, auto-rebalance
+  # (add-brokers) moves partitions onto the new brokers; lowering it (remove-brokers) drains them first.
+  cruiseControl:
+    resources:
+      requests: { cpu: 250m, memory: 1Gi }
+      limits: { memory: 1Gi }
+    autoRebalance:
+      - mode: add-brokers
+        template:
+          name: rebalance-add-brokers
+      - mode: remove-brokers
+        template:
+          name: rebalance-remove-brokers
+    template:
+      pod:
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: workload
+                      operator: In
+                      values: ["general"]
+
+  # Consumer-group lag + topic metrics (feeds whatever you later use for consumer autoscaling).
+  kafkaExporter:
+    topicRegex: ".*"
+    groupRegex: ".*"
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { memory: 128Mi }
+    template:
+      pod:
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: workload
+                      operator: In
+                      values: ["general"]

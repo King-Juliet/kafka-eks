@@ -1,0 +1,7 @@
+apiVersion: v2
+name: karpenter-nodepools
+description: One EC2NodeClass and three NodePools (general, kafka-controllers, kafka-brokers)
+type: application
+# Bump `version` whenever you edit a template (the Terraform Helm provider keys off it).
+version: 0.1.0
+appVersion: "karpenter-1.15"

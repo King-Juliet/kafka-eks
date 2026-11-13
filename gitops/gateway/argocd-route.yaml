@@ -1,0 +1,44 @@
+# Puts the Argo CD web UI and API behind the shared ALB. It lives in the argocd namespace because a route
+# can only point at Services in its own namespace (anything else needs a ReferenceGrant).
+#
+# Traffic path:  client -> ALB (listener rule from this HTTPRoute) -> pod IP of argocd-server
+# The Service is only used to find the pod IPs; the ALB does not send traffic through it.
+#
+# To add another app later: give it its own HTTPRoute in its own namespace (path or hostname match),
+# add that namespace to allowedRoutes in gateway.yaml.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: argocd
+  namespace: argocd
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: platform
+      namespace: gateway
+      sectionName: http
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: argocd-server
+          port: 443
+---
+apiVersion: gateway.k8s.aws/v1
+kind: TargetGroupConfiguration
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  targetReference:
+    name: argocd-server
+  defaultConfiguration:
+    targetType: ip
+    protocol: HTTPS # argocd-server serves HTTPS itself (self-signed); the ALB does not check that certificate
+    healthCheckConfig:
+      healthCheckProtocol: HTTPS
+      healthCheckPath: /healthz

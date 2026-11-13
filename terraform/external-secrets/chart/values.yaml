@@ -1,0 +1,14 @@
+region: ""
+
+# Name of the cluster-wide store the rest of the repo refers to.
+storeName: aws-secrets-manager
+
+# Optional: feed Argo CD its Git credentials from Secrets Manager.
+# Turn on AFTER Argo CD is installed (namespace must exist) and the secret has a value.
+argocdRepoSecret:
+  enabled: false
+  namespace: argocd
+  name: gitops-repo-creds
+  # JSON secret in Secrets Manager with keys: type, url, username, password
+  # (or type, url, sshPrivateKey). Keys become the Secret's keys as-is.
+  remoteKey: /argocd/gitops-repo

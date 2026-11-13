@@ -1,0 +1,7 @@
+apiVersion: v2
+name: gateway-api-crds
+description: Gateway API standard-channel CRDs, copied unchanged from kubernetes-sigs/gateway-api v1.5.0 (the files in crds/)
+type: application
+# Keep in step with the Gateway API release the files in crds/ come from.
+version: 1.5.0
+appVersion: "v1.5.0"

@@ -1,0 +1,27 @@
+# Wave 1: the Kafka cluster itself (Kafka + 2 KafkaNodePools + topics + users + rebalance templates).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kafka-cluster
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: kafka
+  source:
+    repoURL: https://github.com/YOUR-ORG/YOUR-REPO.git
+    targetRevision: main
+    path: gitops/kafka/base
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kafka
+  syncPolicy:
+    automated:
+      prune: false # NEVER auto-delete Kafka objects. Removing a file = a manual, deliberate prune.
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true # CRDs may not be registered yet on the very first sync
+    retry:
+      limit: 20
+      backoff: { duration: 30s, factor: 2, maxDuration: 15m }

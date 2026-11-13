@@ -1,0 +1,23 @@
+# Applied ONCE by hand after Argo CD is installed:  kubectl apply -f gitops/bootstrap/root-app.yaml
+# "App of apps": this one Application creates every other Application found under gitops/argocd/.
+# REPLACE the repoURL below (and in every file under gitops/argocd/) with your Git repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR-ORG/YOUR-REPO.git
+    targetRevision: main
+    path: gitops/argocd
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false # deleting an Application file never deletes what it deployed
+      selfHeal: true

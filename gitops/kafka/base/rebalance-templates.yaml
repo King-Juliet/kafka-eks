@@ -1,0 +1,26 @@
+# Templates used by Cruise Control auto-rebalance (see Kafka.spec.cruiseControl.autoRebalance).
+# The annotation marks them as templates: the operator will not run them by itself.
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaRebalance
+metadata:
+  name: rebalance-add-brokers
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-test
+  annotations:
+    strimzi.io/rebalance-template: "true"
+spec:
+  skipHardGoalCheck: false
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaRebalance
+metadata:
+  name: rebalance-remove-brokers
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-test
+  annotations:
+    strimzi.io/rebalance-template: "true"
+spec:
+  skipHardGoalCheck: false

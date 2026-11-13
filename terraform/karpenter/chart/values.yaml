@@ -1,0 +1,64 @@
+# Filled in by Terraform (terraform/karpenter/main.tf). Defaults below are the design.
+clusterName: ""
+nodeRoleName: ""
+
+# ASSUMPTION: starts at @latest; pin before production (README "Pin the AMI").
+amiAlias: "al2023@latest"
+
+# true in phase 1 (public subnets). false in phase 2 (private subnets + NAT).
+associatePublicIPAddress: true
+
+rootVolumeGiB: 30
+
+pools:
+  # Everything that is not Kafka and not a platform controller: Argo CD, Entity Operator,
+  # Cruise Control, Kafka Exporter. Scales 0 -> N on demand and consolidates when idle.
+  general:
+    enabled: true
+    workload: general
+    taint: null
+    instanceTypes: ["t3.large", "t3a.large"]
+    capacityTypes: ["on-demand"]
+    cpuLimit: "4"
+    expireAfter: 720h
+    disruption:
+      consolidationPolicy: WhenEmptyOrUnderutilized
+      consolidateAfter: 5m
+      budgets:
+        - nodes: "10%"
+
+  # KRaft controllers: 3 nodes, one per AZ (limit allows 1 spare for rolling). Never consolidated, never expired.
+  kafka-controllers:
+    enabled: true
+    workload: kafka-controller
+    taint:
+      key: dedicated
+      value: kafka-controller
+      effect: NoSchedule
+    instanceTypes: ["t3.medium", "t3a.medium"]
+    capacityTypes: ["on-demand"]
+    cpuLimit: "8" # 3 nodes + 1 spare for rolling a node
+    expireAfter: Never
+    disruption:
+      consolidationPolicy: WhenEmpty
+      consolidateAfter: 1h
+      budgets:
+        - nodes: "0" # no voluntary disruption. To roll nodes on purpose, set to "1" for the window.
+
+  # Kafka brokers: 3 to start, headroom for +1. Same no-disruption rules.
+  kafka-brokers:
+    enabled: true
+    workload: kafka-broker
+    taint:
+      key: dedicated
+      value: kafka-broker
+      effect: NoSchedule
+    instanceTypes: ["t3.large", "t3a.large"]
+    capacityTypes: ["on-demand"]
+    cpuLimit: "10" # 3 brokers + 1 scale-out + 1 spare for rolling a node
+    expireAfter: Never
+    disruption:
+      consolidationPolicy: WhenEmpty
+      consolidateAfter: 1h
+      budgets:
+        - nodes: "0"

@@ -1,0 +1,66 @@
+# KRaft controllers: they only store cluster metadata (who is leader, topics, ACLs). They hold NO user data.
+# Fixed at 3 (quorum). Changing this number is planned maintenance, never autoscaling.
+# They run on their own Karpenter pool (kafka-controllers), one per AZ.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: controller
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-test
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  replicas: 3
+  roles:
+    - controller
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 10Gi # ASSUMPTION: metadata only, small
+        class: kafka-gp3
+        deleteClaim: false
+        kraftMetadata: shared
+  resources:
+    requests: { cpu: 250m, memory: 1536Mi }
+    limits: { memory: 1536Mi }
+  jvmOptions:
+    -Xms: 768m
+    -Xmx: 768m
+  template:
+    pod:
+      metadata:
+        annotations:
+          karpenter.sh/do-not-disrupt: "true" # Karpenter must never evict a controller to "save money"
+      priorityClassName: kafka-critical
+      terminationGracePeriodSeconds: 120
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: kafka-controller
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: workload
+                    operator: In
+                    values: ["kafka-controller"]
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  strimzi.io/cluster: kafka-test
+                  strimzi.io/pool-name: controller
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              strimzi.io/cluster: kafka-test
+              strimzi.io/pool-name: controller

@@ -1,0 +1,62 @@
+# Users are declared in Git; the User Operator creates the SCRAM credentials and stores each one in a
+# Kubernetes Secret named after the user (keys: password, sasl.jaas.config).
+---
+# Super user (see Kafka.spec.kafka.authorization.superUsers). For operators only - never give to an application.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: admin
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-test
+spec:
+  authentication:
+    type: scram-sha-512
+---
+# Producer apps: may create/write/describe topics named app.*
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: producer-app
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-test
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: app.
+          patternType: prefix
+        operations: [Describe, Write, Create]
+      - resource:
+          type: cluster
+        operations: [IdempotentWrite]
+---
+# Consumer apps: may read topics app.* using consumer groups named app-*
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: consumer-app
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-test
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: app.
+          patternType: prefix
+        operations: [Describe, Read]
+      - resource:
+          type: group
+          name: app-
+          patternType: prefix
+        operations: [Read]

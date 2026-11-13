@@ -1,0 +1,81 @@
+# One shared ALB for HTTP(S) endpoints inside the cluster. Kafka does NOT use it: Kafka speaks its own
+# protocol over plain TCP, so it has its own NLBs (see gitops/kafka/base/kafka.yaml).
+#
+# How the pieces fit:
+#   GatewayClass            = "Gateways of this class are handled by the AWS Load Balancer Controller"
+#   Gateway                 = "I want a load balancer with these listeners" -> the controller builds an ALB
+#   LoadBalancerConfiguration = AWS-only settings for that ALB (internal or internet-facing, certificates, ...)
+#   TargetGroupConfiguration  = AWS-only settings for where the ALB sends traffic (pod IPs, health checks)
+#   HTTPRoute (other files)  = "send these paths to that Service" -> becomes a listener rule on the ALB
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: aws-alb
+spec:
+  controllerName: gateway.k8s.aws/alb
+---
+# Default for every route behind the Gateway. It has no targetReference on purpose.
+apiVersion: gateway.k8s.aws/v1
+kind: TargetGroupConfiguration
+metadata:
+  name: platform-defaults
+  namespace: gateway
+spec:
+  defaultConfiguration:
+    targetType: ip # the ALB talks straight to pod IPs (the VPC CNI gives pods real VPC addresses)
+---
+apiVersion: gateway.k8s.aws/v1
+kind: LoadBalancerConfiguration
+metadata:
+  name: platform-alb
+  namespace: gateway
+spec:
+  # internal       = reachable from inside the VPC only (private subnets). Safe default.
+  # internet-facing = public subnets. If you switch, ALSO set sourceRanges below to your own IP,
+  #                   or the Argo CD login page is open to the whole internet.
+  scheme: internal
+  ipAddressType: ipv4
+  # sourceRanges:
+  #   - 203.0.113.10/32 # REPLACE with your IP: curl -s https://checkip.amazonaws.com
+  defaultTargetGroupConfiguration:
+    name: platform-defaults
+  # HTTPS needs a certificate from AWS Certificate Manager in this region. When you have one:
+  #   1. uncomment this block and put its ARN in
+  #   2. uncomment the "https" listener in the Gateway below
+  # listenerConfigurations:
+  #   - protocolPort: HTTPS:443
+  #     defaultCertificate: arn:aws:acm:REGION:ACCOUNT_ID:certificate/CERTIFICATE_ID
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: platform
+  namespace: gateway
+spec:
+  gatewayClassName: aws-alb
+  infrastructure:
+    parametersRef:
+      group: gateway.k8s.aws
+      kind: LoadBalancerConfiguration
+      name: platform-alb
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          # Only routes from these namespaces may attach. Add a namespace here when a new app needs a route.
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: argocd
+    # - name: https
+    #   protocol: HTTPS
+    #   port: 443
+    #   allowedRoutes:
+    #     namespaces:
+    #       from: Selector
+    #       selector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: argocd

@@ -1,0 +1,24 @@
+# Wave -1: namespace + PriorityClass must exist before the operator and the cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kafka-prereqs
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: kafka
+  source:
+    repoURL: https://github.com/YOUR-ORG/YOUR-REPO.git
+    targetRevision: main
+    path: gitops/kafka/prereqs
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kafka
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    retry:
+      limit: 10
+      backoff: { duration: 30s, factor: 2, maxDuration: 10m }

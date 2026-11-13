@@ -1,0 +1,275 @@
+EKS + KARPENTER + STRIMZI KAFKA - BUILD SHEET
+================================================================================
+Account ID ......... NOT PROVIDED  (aws sts get-caller-identity --query Account)
+Region ............. ASSUMPTION eu-west-1 (you did not give one). Change it in step 3.
+Scope .............. IN : VPC, bastion (Session Manager), EKS (no Auto Mode), Karpenter, LBC, ESO, Pod Identity,
+                         Gateway API (ALB) for HTTP endpoints, Strimzi Kafka via Argo CD
+                    LATER: producer/consumer ASGs (yours), private-subnet move, monitoring,
+                           backups, MirrorMaker
+Status ............. NOTHING here has been run against AWS or a cluster.
+                    Checked offline only (see README "What was and was not checked").
+
+REFERENCE IDS
+--------------------------------------------------------------------------------
+VPC / subnets / cluster ... do not exist yet; created in step 5. Never typed by hand.
+State bucket .............. created in step 3 (name derived from account + region)
+Leaked AWS key ............ your ARGOCD-1.docx contains an access key. Deactivate and
+                            delete it in IAM before anything else (step 1).
+
+ORDER (hard dependencies)
+--------------------------------------------------------------------------------
+terraform apply -target=module.eks (VPC, bastion, cluster)  ->  open the tunnel (second terminal)
+  ->  terraform apply (Karpenter -> LB controller -> ESO)  ->  Argo CD (yours)
+  ->  gitops bootstrap  ->  Kafka running
+(The tunnel needs the cluster and the bastion to exist; Terraform's Helm steps and kubectl need the
+ tunnel; Argo needs Karpenter nodes.)
+
+PHASE 0 - LOCAL PREP (your Mac)
+--------------------------------------------------------------------------------
+1.  Remove the leaked key
+    Console ........ IAM > Users > <user> > Security credentials > Make inactive > Delete
+    (Then use SSO / short-lived credentials only. Nothing in this repo needs static keys.)
+
+2.  Install tools
+    brew install terraform awscli kubectl helm
+    brew install --cask session-manager-plugin     # the tunnel to the bastion (step 5c) needs it
+    session-manager-plugin                         # must print "...installed successfully"
+    (dig, used in step 5c, ships with macOS. Your AWS identity needs ssm:StartSession; admins have it.)
+    terraform version ...... must be >= 1.10
+    aws sts get-caller-identity ...... must show the account you intend to use
+    export AWS_REGION=eu-west-1            # ASSUMPTION - use the region you really want
+    export AWS_DEFAULT_REGION=$AWS_REGION
+    cd <path to the eks-kafka folder> && export REPO=$PWD      # every cd below starts from $REPO
+
+3.  Create the Terraform state bucket (once) and point the region folder at it
+    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+    BUCKET=tfstate-$ACCOUNT_ID-$AWS_REGION
+    aws s3api create-bucket --bucket $BUCKET --region $AWS_REGION \
+      --create-bucket-configuration LocationConstraint=$AWS_REGION
+    aws s3api put-bucket-versioning --bucket $BUCKET --versioning-configuration Status=Enabled
+    aws s3api put-bucket-encryption --bucket $BUCKET --server-side-encryption-configuration \
+      '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+    aws s3api put-public-access-block --bucket $BUCKET --public-access-block-configuration \
+      BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+    (us-east-1 only: delete the --create-bucket-configuration line)
+    (Already have a state bucket? Skip the five commands above, set BUCKET=<your bucket> and carry on.)
+    Region other than eu-west-1? Rename the folder and swap the name inside it (macOS sed; Linux: drop the ''):
+      mv $REPO/terraform/eu-west-1 $REPO/terraform/$AWS_REGION
+      sed -i '' "s/eu-west-1/$AWS_REGION/g" $REPO/terraform/$AWS_REGION/*.tf
+    (Folder already named after your region? Skip the mv and the sed, but check by hand that the default of
+     var.region in variables.tf and the region in backend.tf both say the same region as the folder.)
+    Then, in every case:
+      export TF_DIR=$REPO/terraform/$AWS_REGION
+      sed -i '' "s/REPLACE_BUCKET/$BUCKET/" $TF_DIR/backend.tf
+      grep -rn REPLACE_ $TF_DIR                         # must print nothing
+
+4.  Preflight - confirm the pins I could not check from here
+    cd $REPO && terraform fmt -recursive
+    helm show chart oci://public.ecr.aws/karpenter/karpenter --version 1.15.1 | head -5
+    aws eks describe-addon-versions --kubernetes-version 1.37 --addon-name aws-ebs-csi-driver \
+      --query 'addons[0].addonVersions[0].addonVersion'
+    aws ssm get-parameter --name /aws/service/eks/optimized-ami/1.37/amazon-linux-2023/x86_64/standard/recommended/release_version \
+      --query Parameter.Value --output text
+    aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+      --query Parameter.Value --output text                 # the bastion's AMI id (ami-...)
+    (If 1.37 is missing in your region or any command fails: change the default of kubernetes_version
+     to "1.36" in $TF_DIR/variables.tf and use the matching Karpenter chart - see CHANGELOG.)
+
+PHASE 1 - CLUSTER AND CONTROLLERS  (terraform/<region>)
+--------------------------------------------------------------------------------
+5.  Apply in three moves: base -> tunnel -> the rest
+    (Why: the Kubernetes API accepts only the bastion's Elastic IP, so from your Mac Terraform and kubectl
+     reach it through a Session Manager tunnel via the bastion. The tunnel can only be opened once the
+     cluster and the bastion exist. Details: README, "Reaching the Kubernetes API".)
+    cd $TF_DIR
+    terraform init
+
+    5a. Base: VPC, KMS keys, bastion, EKS control plane and system nodes
+        terraform apply -target=module.eks
+        (-target also builds what module.eks needs. Terraform warns that targeting is in use: expected, once.
+         Do not leave the base without the rest: only step 5d builds everything else.)
+
+    5b. Wait until the bastion is registered in Systems Manager (usually a minute or two after it starts)
+        export CLUSTER=kafka-test                           # = the default of var.cluster_name
+        BASTION_ID=$(aws ec2 describe-instances --region $AWS_REGION \
+          --filters "Name=tag:Name,Values=$CLUSTER-bastion" "Name=instance-state-name,Values=running" \
+          --query 'Reservations[0].Instances[0].InstanceId' --output text)
+        aws ssm describe-instance-information --region $AWS_REGION \
+          --filters Key=InstanceIds,Values=$BASTION_ID \
+          --query 'InstanceInformationList[0].PingStatus' --output text      # must print Online
+        (Prints None or nothing: wait a minute and repeat. Still nothing after several minutes: the bastion
+         cannot reach Systems Manager; check it has the Elastic IP and the public route table has the
+         internet-gateway route.)
+
+    5c. Open the tunnel in a SECOND terminal and leave it running
+        (Set AWS_REGION, CLUSTER and BASTION_ID there too, same values as above.)
+        API_HOST=$(aws eks describe-cluster --region $AWS_REGION --name $CLUSTER \
+          --query cluster.endpoint --output text | sed 's#https://##')
+        API_IP=$(dig +short A $API_HOST | grep -E '^[0-9.]+$' | head -n 1)       # must print an IP
+        aws ssm start-session --region $AWS_REGION --target $BASTION_ID \
+          --document-name AWS-StartPortForwardingSessionToRemoteHost \
+          --parameters host=$API_IP,portNumber=443,localPortNumber=8443          # 8443 = var.api_tunnel_port
+        (It prints "Waiting for connections..." and stays in the foreground. That terminal IS the tunnel:
+         closing it cuts Terraform and kubectl off from the cluster. After step 5d, the same command is
+         available as:  eval "$(terraform output -raw api_tunnel_command)"  )
+        (The bastion connects to $API_IP across the internet, from its Elastic IP, which is exactly what the
+         cluster allows. $API_IP is looked up from your Mac so the bastion does not resolve the name to the
+         VPC-internal address.)
+
+    5d. Back in the first terminal: everything else
+        terraform plan -out=tfplan
+        terraform apply tfplan                              # the slow part: add-ons and the Helm releases
+        (Roughly 25-30 min for all of step 5 together: an estimate, not measured.)
+        (Every other value has a default in $TF_DIR/variables.tf; to change one, edit its default there.)
+        (Any later plan / apply / destroy needs the tunnel open. "connection refused" on localhost:8443,
+         or a timeout, means the tunnel stopped: rerun the 5c command and rerun Terraform; it carries on
+         where it stopped. I could not test how the tunnel copes with Terraform's many parallel
+         connections; if you see resets, add -parallelism=2 to plan / apply.)
+
+6.  Connect and verify the cluster
+    eval "$(terraform output -raw update_kubeconfig_command)"     # kubeconfig that goes through the tunnel
+    kubectl get nodes -o wide            # expect 2 nodes, label workload=system
+    kubectl get pods -A                  # coredns, kube-proxy, aws-node, ebs-csi, pod-identity-agent Running
+    kubectl -n kube-system get ds ebs-csi-node
+    (kubectl hangs or says connection refused = the tunnel (5c) is not running.)
+    (DESIRED of ebs-csi-node must equal the node count. If a tainted Kafka node later shows
+     fewer, the toleration setting did not apply - see README "Things most likely to need a tweak".)
+
+7.  Verify the controllers
+    kubectl -n kube-system get pods -l app.kubernetes.io/name=karpenter     # 2 Running
+    kubectl get ec2nodeclass,nodepool                                       # default + 3 pools, READY True
+    kubectl -n kube-system get deploy aws-load-balancer-controller          # 2/2
+    kubectl -n external-secrets get pods                                    # 3 pods Running
+    kubectl get clustersecretstore aws-secrets-manager                      # STATUS Valid
+    kubectl get sc kafka-gp3
+    kubectl get crd | grep -E "gateway.networking.k8s.io|gateway.k8s.aws"      # 8 + 3 = 11 lines
+    (ClusterSecretStore not Valid = Pod Identity not working for ESO. Check
+     aws eks list-pod-identity-associations --cluster-name <name>.)
+
+PHASE 2 - ARGO CD  (yours) AND GITOPS REPO
+--------------------------------------------------------------------------------
+8.  Push this repo to GitHub (branch main)
+    Replace https://github.com/YOUR-ORG/YOUR-REPO.git in:
+      gitops/bootstrap/root-app.yaml
+      gitops/argocd/projects/kafka.yaml
+      gitops/argocd/apps/kafka-prereqs.yaml  kafka-cluster.yaml  kafka-secrets.yaml  gateway.yaml
+    grep -rn "YOUR-ORG" $REPO/gitops/      # must print nothing when done
+
+9.  Install Argo CD yourself, namespace "argocd" (your own method)
+    Its pods will not fit the tainted system nodes: Karpenter starts one "general" node
+    for them (~1-2 min). That is expected.
+
+10. (Private repo only) Give Argo CD its Git credential through ESO
+    Write the secret value - do not put it in Terraform or Git:
+      aws secretsmanager put-secret-value --secret-id /argocd/gitops-repo \
+        --secret-string file://gitops-repo.json
+      (file contents: {"type":"git","url":"<repo url>","username":"x-access-token","password":"<token>"})
+      rm -P gitops-repo.json
+    Then in $TF_DIR/variables.tf change the default of argocd_repo_secret_enabled to true and run
+    terraform apply again (set in the file, not an env var, so it stays on for later applies).
+    kubectl -n argocd get externalsecret gitops-repo-creds        # STATUS SecretSynced
+
+11. Bootstrap
+    cd $REPO
+    kubectl apply -f gitops/bootstrap/repo-strimzi-oci.yaml
+    kubectl apply -f gitops/bootstrap/root-app.yaml
+    (Registers the Strimzi OCI registry, then starts "app of apps".)
+
+PHASE 3 - WATCH KAFKA COME UP
+--------------------------------------------------------------------------------
+12. Argo CD
+    kubectl -n argocd get applications
+    Expected: root, kafka-prereqs, strimzi-operator, kafka-cluster, kafka-secrets, gateway -> Synced / Healthy
+    (First sync may show kafka-cluster Degraded for a minute until the operator's CRDs
+     exist. Automatic retry handles it. Do not click around.)
+
+13. Nodes
+    kubectl get nodeclaims
+    kubectl get nodes -L workload,topology.kubernetes.io/zone
+    Expected: 1 general, 3 kafka-controller (one per zone), 3 kafka-broker (one per zone)
+
+14. Kafka
+    kubectl -n kafka get kafka,kafkanodepool,pods -o wide
+    kubectl -n kafka get kafka kafka-test -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+    kubectl -n kafka get svc | grep -i loadbalancer          # 4 internal NLBs (bootstrap + 3 brokers)
+    (Pods Pending on "volume node affinity"/"no nodes" = Karpenter still launching. Wait.
+     Pods Pending with "Insufficient" and no NodeClaim = check NodePool limits.)
+
+15. Credentials reached Secrets Manager
+    kubectl -n kafka get pushsecret
+    aws secretsmanager list-secrets --query 'SecretList[?starts_with(Name,`/kafka/`)].Name'
+    Expected: /kafka/clients/admin  /kafka/clients/producer-app  /kafka/clients/consumer-app  /kafka/cluster/ca-crt
+
+16. Gateway (the ALB in front of the Argo CD UI)
+    kubectl get gatewayclass aws-alb                          # ACCEPTED True
+    kubectl -n gateway get gateway platform                   # PROGRAMMED True, ADDRESS = the ALB's DNS name
+    kubectl -n argocd get httproute argocd                    # exists, parent platform
+    kubectl -n argocd get targetgroupconfigurations.gateway.k8s.aws
+    (The ALB is INTERNAL by default: reachable from inside the VPC only. To open it to your Mac, in
+     gitops/gateway/gateway.yaml set  scheme: internet-facing  AND  sourceRanges: [<your IP>/32], push.
+     Until then:  kubectl -n argocd port-forward svc/argocd-server 8080:443 .)
+    (No address after a few minutes? README, "Things most likely to need a tweak", items 8 and 9.)
+
+PHASE 4 - BREAK THINGS ON PURPOSE (optional but recommended before going private)
+--------------------------------------------------------------------------------
+17. Lose a broker
+    kubectl -n kafka delete pod kafka-test-broker-<n>
+    kubectl -n kafka get pods -w
+    Expected: pod returns in 1-3 min; the Kafka resource goes back to Ready True (step 14 command)
+
+18. Scale brokers 3 -> 4
+    Edit gitops/kafka/base/nodepool-brokers.yaml  replicas: 4 ; commit ; push
+    Expected: new NodeClaim in kafka-brokers, 4th broker Ready, KafkaRebalance auto-created
+    kubectl -n kafka get kafkarebalance
+    (Scaling back to 3 works the same way. Below 3 is impossible while topics use RF 3.)
+
+PHASE 5 - TEARDOWN (billable resources)
+--------------------------------------------------------------------------------
+19. Delete workloads first (otherwise the VPC cannot be deleted - NLBs, the ALB and node ENIs block it)
+    (Keep the tunnel terminal from step 5c open for steps 19 and 20, and check kubectl works first.)
+    kubectl -n gateway delete gateway platform      # the controller deletes the ALB; Argo will not do this either
+    kubectl -n argocd delete httproute argocd
+    kubectl -n kafka delete kafka kafka-test        # Argo will not do this for you (Delete=false)
+    kubectl -n kafka delete kafkanodepool --all
+    kubectl -n kafka delete pvc --all
+    kubectl delete nodepool --all                   # Karpenter terminates its EC2 nodes
+    kubectl -n argocd delete application root          # first, or it recreates the others
+    kubectl -n argocd delete application --all
+    kubectl get svc -A | grep LoadBalancer          # must be empty before continuing
+    kubectl get gateway -A                          # must be empty too
+20. Destroy everything Terraform built (controllers, cluster, VPC - in the right order)
+    cd $TF_DIR && terraform destroy
+    (The bastion is removed after the cluster, so the tunnel stays usable while the Helm releases go.
+     Afterwards press Ctrl+C in the tunnel terminal; it has nothing left to talk to.)
+21. Clean what Terraform does not own
+    EBS volumes kept by reclaimPolicy Retain ... EC2 > Volumes > state "available" > delete
+    Secrets /kafka/* created by ESO ............ aws secretsmanager delete-secret --secret-id <name>
+    CloudWatch log groups ...................... /aws/eks/<cluster>/cluster, VPC flow logs
+    KEEP ....................................... the S3 state bucket
+
+NOT PART OF THIS BUILD (FUTURE)
+--------------------------------------------------------------------------------
+- Producers and consumers on Auto Scaling Groups (yours). Kafka side is already prepared:
+  users producer-app (writes app.*) and consumer-app (reads app.*, any group named app-*) in
+  gitops/kafka/base/users.yaml; their passwords and the cluster CA are copied to Secrets Manager
+  (/kafka/clients/<user>, /kafka/cluster/ca-crt, step 15). Clients connect to the internal NLB on
+  port 9094 (TLS + SCRAM-SHA-512). More consumer groups under the app- prefix need no change;
+  other prefixes or users need new ACLs in users.yaml.
+- Move to private subnets: in variables.tf change the defaults of node_subnet_tier to "private" and
+  enable_nat_gateway to true (Karpenter nodes drop their public IPs by themselves),
+  then close the public API endpoint. (The bastion's Elastic IP rule then no longer applies: you would
+  allow the bastion's security group into the cluster security group on 443 and tunnel to the private
+  endpoint name instead.)
+  (Kafka NodePool disruption budgets are 0: roll nodes one at a time by setting the budget to 1.)
+- Monitoring/alerting (Prometheus + Grafana, Kafka Exporter dashboards), log shipping
+- Backups (EBS snapshots / MirrorMaker 2 to a second cluster), multi-cluster DR
+- Consumer autoscaling on consumer-group lag
+- HTTPS and a DNS name for the Argo CD ALB: ACM certificate, then uncomment the two marked blocks in
+  gitops/gateway/gateway.yaml (more apps = one HTTPRoute each, and their namespace added to allowedRoutes)
+- Pin the AMI alias; CMK for Secrets Manager; Argo CD SSO
+- A second region: copy the region folder, rename it, change the region inside it
+
+Generated 2026-11-12 (v0.6.0: bastion + Session Manager tunnel replace your-own-IP; builds on 0.5.0 Gateway API). Offline checks only:
+HCL parse + reference check; every aws_* argument checked against the AWS provider docs of 2026-11-10;
+every YAML manifest validated against the Strimzi 1.3.1 / Karpenter v1.15.1 / ESO 2.15.0 / Argo CD v3.6.1
+CRD schemas. terraform fmt/init/validate/plan/apply have NOT been run. No AWS account or cluster was touched.

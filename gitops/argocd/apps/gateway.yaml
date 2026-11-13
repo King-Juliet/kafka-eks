@@ -1,0 +1,28 @@
+# Wave 3: the shared ALB (a Gateway) and the route that puts the Argo CD web UI behind it.
+# Uses the "default" project, not "kafka": it creates a cluster-wide GatewayClass and objects in
+# the argocd namespace, which the kafka project's fence does not allow.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR-ORG/YOUR-REPO.git
+    targetRevision: main
+    path: gitops/gateway
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gateway
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true # the "gateway" namespace
+    retry:
+      limit: 10
+      backoff: { duration: 30s, factor: 2, maxDuration: 10m }

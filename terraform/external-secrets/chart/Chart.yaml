@@ -1,0 +1,6 @@
+apiVersion: v2
+name: eso-config
+description: ClusterSecretStore for AWS Secrets Manager (+ optional Argo CD repo credentials ExternalSecret)
+type: application
+version: 0.1.0
+appVersion: "eso-2.15"

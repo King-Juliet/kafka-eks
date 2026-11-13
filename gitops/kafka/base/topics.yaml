@@ -1,0 +1,15 @@
+# Topics are declared in Git; the Topic Operator creates them in Kafka.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: app-orders
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-test
+spec:
+  topicName: app.orders
+  partitions: 6
+  replicas: 3
+  config:
+    retention.ms: 604800000 # 7 days
+    min.insync.replicas: 2
