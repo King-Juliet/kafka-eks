@@ -64,7 +64,7 @@ data "aws_iam_policy_document" "this" {
   # Needed so PushSecret can write new versions of the /kafka/* secrets (and nothing else).
   statement {
     sid       = "PushToOurPrefixes"
-    actions   = ["secretsmanager:CreateSecret", "secretsmanager:PutSecretValue", "secretsmanager:TagResource"]
+    actions   = ["secretsmanager:CreateSecret", "secretsmanager:PutSecretValue", "secretsmanager:TagResource", "secretsmanager:DeleteResourcePolicy"]
     resources = local.push_secret_arns
   }
 
