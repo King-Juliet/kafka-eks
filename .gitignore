@@ -1,7 +1,10 @@
 # Terraform
 .terraform/
 *.tfstate
+*.tfplan
 *.tfstate.*
+*.tfplan.*
+tfplan
 crash.log
 *.tfvars
 !*.tfvars.example

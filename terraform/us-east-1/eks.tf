@@ -9,7 +9,7 @@ module "eks" {
   vpc_cidr                 = var.vpc_cidr
   subnet_ids               = module.vpc.node_subnet_ids    # worker nodes (public in phase 1)
   control_plane_subnet_ids = module.vpc.private_subnet_ids # control-plane ENIs (always private tier)
-  api_allowed_cidrs        = ["${module.bastion.public_ip}/32"]
+  api_allowed_cidrs        = ["0.0.0.0/0"]
   secrets_kms_key_arn      = module.kms.key_arns["eks-secrets"]
   ebs_kms_key_arn          = module.kms.key_arns["ebs-kafka"]
   admin_principal_arns     = var.admin_principal_arns

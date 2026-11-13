@@ -10,11 +10,9 @@ provider "aws" {
 # The API only accepts the bastion's Elastic IP, so they connect to a Session Manager tunnel on this machine
 # (RUNBOOK step 5, `terraform output api_tunnel_command`). The tunnel must be open for every plan, apply and
 # destroy once the cluster exists.
-# tls_server_name: the certificate is for the endpoint name, not for "localhost", so it is checked against that name.
 # Tokens are short-lived and come from the AWS CLI (no static credentials, nothing stored in state).
 provider "kubernetes" {
-  host                   = local.api_tunnel_url
-  tls_server_name        = local.api_server_name
+  host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
 
   exec {
@@ -27,8 +25,7 @@ provider "kubernetes" {
 # Helm provider 3.x takes the connection as an attribute (kubernetes = { ... }), not a nested block.
 provider "helm" {
   kubernetes = {
-    host                   = local.api_tunnel_url
-    tls_server_name        = local.api_server_name
+    host                   = module.eks.cluster_endpoint
     cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
 
     exec = {

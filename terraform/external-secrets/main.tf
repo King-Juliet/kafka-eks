@@ -110,9 +110,7 @@ resource "helm_release" "operator" {
   name             = "external-secrets"
   namespace        = var.namespace
   create_namespace = true
-  repository       = "https://charts.external-secrets.io"
-  chart            = "external-secrets"
-  version          = var.chart_version
+  chart            = "${path.module}/external-secrets-2.15.0.tgz"
 
   values = [yamlencode({
     installCRDs  = true
