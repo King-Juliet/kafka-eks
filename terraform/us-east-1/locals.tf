@@ -9,16 +9,12 @@ locals {
     var.extra_tags
   )
 
-  # The Kubernetes API is reached through a Session Manager tunnel on your Mac (RUNBOOK step 5), so Terraform's
-  # Kubernetes and Helm providers talk to localhost. The API certificate does not list "localhost", so the
-  # providers are told which name to check it against: the cluster's real endpoint name.
-  api_tunnel_url  = "https://localhost:${var.api_tunnel_port}"
-  api_server_name = trimprefix(module.eks.cluster_endpoint, "https://")
+  # Roles created by ../bootstrap. They are referenced by NAME so this folder works without reading that state.
+  gh_cd_role_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.ci_name_prefix}-gh-cd"
 
-  # One switch drives every "public IP or not" setting (Karpenter nodes).
-  nodes_in_public_subnets = var.node_subnet_tier == "public"
+  # Who is cluster-admin: the deploy role (it runs the platform layer) plus any humans listed in var.admin_principal_arns.
+  cluster_admins = distinct(concat([local.gh_cd_role_arn], var.admin_principal_arns))
 
-  # Platform controllers live on the tainted system node group.
-  system_node_selector = { workload = "system" }
-  system_tolerations   = [{ key = "CriticalAddonsOnly", operator = "Exists" }]
+  # Scripts bucket names are global, so account id and region are part of the name.
+  scripts_bucket_name = "${var.cluster_name}-etl-scripts-${data.aws_caller_identity.current.account_id}-${var.region}"
 }

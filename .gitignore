@@ -8,7 +8,8 @@ tfplan
 crash.log
 *.tfvars
 !*.tfvars.example
-# keep .terraform.lock.hcl committed (provider pinning)
+*.terraform.lock.hcl*
+terraform/us-east-1/.terraform.lock.hcl
 
 # macOS / editors
 .DS_Store

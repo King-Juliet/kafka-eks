@@ -1,4 +1,5 @@
 # ---------------------------------------------------------------- general
+
 variable "region" {
   description = "AWS region. ASSUMPTION: us-east-1 (not given). The folder name, the region in backend.tf and this value must all match; a check warns if they do not."
   type        = string
@@ -16,7 +17,9 @@ variable "extra_tags" {
   default = {}
 }
 
+
 # ---------------------------------------------------------------- network
+
 variable "vpc_cidr" {
   description = "ASSUMPTION: 10.20.0.0/16. If you change it, also update the CIDR in gitops/kafka/base/kafka.yaml (networkPolicyPeers)."
   type        = string
@@ -30,15 +33,20 @@ variable "az_count" {
 }
 
 variable "node_subnet_tier" {
-  description = "\"public\" for phase 1 (testing), flip to \"private\" for phase 2 (also set enable_nat_gateway = true). Karpenter nodes and the client ASGs follow this setting."
+  description = "\"private\" for production: Kafka nodes, ETL instances and runners have no public IP and reach the internet through NAT. (\"public\" was the phase-1 test setting.) Karpenter nodes and the client ASGs follow this setting."
   type        = string
-  default     = "public"
+  default     = "private"
+
+  validation {
+    condition     = contains(["public", "private"], var.node_subnet_tier)
+    error_message = "node_subnet_tier must be \"public\" or \"private\"."
+  }
 }
 
 variable "enable_nat_gateway" {
-  description = "Turn on when moving nodes to private subnets."
+  description = "Needed while nodes are in private subnets (image pulls, GitHub, Blockstream API, package mirrors)."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "single_nat_gateway" {
@@ -47,28 +55,17 @@ variable "single_nat_gateway" {
   default     = true
 }
 
+
 # ---------------------------------------------------------------- EKS
+
 variable "kubernetes_version" {
   description = "EKS version. 1.37 is the default here; 1.36 is the fallback if 1.37 add-ons misbehave."
   type        = string
   default     = "1.37"
 }
 
-variable "bastion_instance_type" {
-  description = "ASSUMPTION: t3.micro. The bastion only forwards traffic; its Elastic IP is the one address allowed on the public Kubernetes API."
-  type        = string
-  default     = "t3.micro"
-}
-
-variable "api_tunnel_port" {
-  description = "ASSUMPTION: 8443. Local port on your Mac where the Session Manager tunnel to the Kubernetes API listens. Terraform and kubectl both connect to https://localhost:<this port>. Any free port works."
-  type        = number
-  default     = 8443
-}
-
-
 variable "admin_principal_arns" {
-  description = "Extra IAM role/user ARNs that should be cluster-admin (you, as creator, already are)."
+  description = "Extra IAM role/user ARNs that should be cluster-admin, e.g. your SSO admin role. The deploy role is added automatically (locals.tf). Do NOT list the identity that first created the cluster by hand if it already has implicit admin: EKS refuses a duplicate entry."
   type        = list(string)
   default     = []
 }
@@ -91,130 +88,137 @@ variable "enable_network_policy" {
 }
 
 variable "deletion_protection" {
-  description = "Set true once this stops being a test cluster."
+  description = "Protect the EKS cluster from accidental deletion. On for production; switch it off deliberately (and apply) before any terraform destroy."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "argocd_secret_names" {
-  description = "Empty Secrets Manager shells to create for Argo CD (values filled in by hand)."
+  description = "Empty Secrets Manager shells to create for Argo CD (values filled in by hand, once)."
   type        = set(string)
   default     = ["/argocd/gitops-repo"]
 }
 
-# ---------------------------------------------------------------- chart versions (verified as upstream tags on 2026-11-11, see CHANGELOG)
-variable "karpenter_chart_version" {
-  description = "Karpenter chart + CRD chart version. K8s 1.37 needs 1.15.x."
+
+# ---------------------------------------------------------------- CI/CD and runners
+variable "github_repo" {
+  description = "owner/repo that the bootstrap runner registers to."
   type        = string
-  default     = "1.15.1"
+  default     = "King-Juliet/kafka-eks"
 }
 
-variable "lbc_chart_version" {
-  description = "aws-load-balancer-controller chart version."
+variable "ci_name_prefix" {
+  description = "Prefix of the GitHub OIDC roles created by ../bootstrap (<prefix>-gh-ci, <prefix>-gh-cd). The deploy role becomes cluster-admin, so this must match what bootstrap created."
   type        = string
-  default     = "3.6.2"
+  default     = "kafka-eks"
 }
 
-variable "eso_chart_version" {
-  description = "external-secrets chart version."
+variable "runner_auth_secret_name" {
+  description = "Secrets Manager secret (created by ../bootstrap) holding the GitHub token the runners register with."
   type        = string
-  default     = "2.15.0"
+  default     = "/github/runner-auth"
 }
 
-# ---------------------------------------------------------------- Karpenter nodes
-variable "ami_alias" {
-  description = <<-EOT
-    EC2NodeClass AMI alias. ASSUMPTION: starts at al2023@latest because a valid pinned release could not be looked up
-    from here. PIN IT before production, e.g. al2023@v20260101 (see README "Pin the AMI").
-    Kafka pools have a disruption budget of 0, so a new AMI never rolls Kafka nodes by surprise.
-  EOT
+variable "runner_instance_type" {
+  description = "ASSUMPTION: t3.small for the bootstrap runner."
   type        = string
-  default     = "al2023@latest"
+  default     = "t3.small"
 }
 
-variable "node_root_volume_gib" {
-  description = "ASSUMPTION: 30 GiB root volume (Kafka data is on separate PVCs)."
-  type        = number
-  default     = 30
-}
-
-variable "general_instance_types" {
-  description = "ASSUMPTION: Argo CD + Entity Operator + Cruise Control + exporter need ~4-5 GiB, so t3.large."
-  type        = list(string)
-  default     = ["t3.large", "t3a.large"]
-}
-
-variable "general_cpu_limit" {
-  description = "Max vCPU the general pool may ever provision (4 = two t3.large)."
+# ---------------------------------------------------------------- database
+variable "db_engine_version" {
+  description = "ASSUMPTION: PostgreSQL 16 (major only). Not looked up; confirm it is offered in the region before the first apply."
   type        = string
-  default     = "4"
+  default     = "16"
 }
 
-variable "controller_instance_types" {
-  description = "ASSUMPTION: t3.medium is the smallest sensible size for a KRaft controller."
-  type        = list(string)
-  default     = ["t3.medium", "t3a.medium"]
-}
-
-variable "controller_cpu_limit" {
-  description = "8 vCPU = 4 x t3.medium: the 3 controller nodes plus ONE spare so a node roll can start the replacement before stopping the old one. (Karpenter blocks only when usage is strictly above the limit.)"
+variable "db_instance_class" {
+  description = "ASSUMPTION: db.t4g.large. Not sized from real load."
   type        = string
-  default     = "8"
+  default     = "db.t4g.large"
 }
 
-variable "broker_instance_types" {
-  description = "ASSUMPTION: t3.large (8 GiB) is the smallest sensible broker for a test."
-  type        = list(string)
-  default     = ["t3.large", "t3a.large"]
+variable "db_multi_az" {
+  type    = bool
+  default = true
 }
 
-variable "broker_cpu_limit" {
-  description = "10 vCPU = 5 x t3.large: 3 brokers + 1 for scaling out + 1 spare for a node roll."
-  type        = string
-  default     = "10"
-}
-
-# ---------------------------------------------------------------- External Secrets
-variable "argocd_repo_secret_enabled" {
-  description = "Create the ExternalSecret that feeds Argo CD its Git credentials. Turn on AFTER you installed Argo CD (namespace argocd must exist) and filled /argocd/gitops-repo."
+variable "db_deletion_protection" {
+  description = "Refuse to delete the database. Switch off deliberately (and apply) before a destroy."
   type        = bool
-  default     = false
+  default     = true
+}
+
+variable "db_app_secret_name" {
+  description = "Secrets Manager secret holding the ETL's own DB user (written by scripts/db_migrate.py)."
+  type        = string
+  default     = "/kafka-eks/db/etl-app"
 }
 
 # ---------------------------------------------------------------- producer / consumer ASGs
-variable "kafka_bootstrap_servers" {
-  description = <<-EOT
-    Leave null until Kafka is running. Then set it to the external listener address, from:
-    kubectl -n kafka get kafka kafka-test -o jsonpath='{.status.listeners[?(@.name=="external")].bootstrapServers}'
-    While null, no client ASGs are created.
-  EOT
+variable "alarm_topic_arn" {
+  description = "Optional SNS topic that receives the ETL alarms (lag metric missing, producer down). null = alarms exist but notify nobody."
   type        = string
   default     = null
 }
 
-variable "kafka_client_groups" {
-  description = "ASSUMPTION: 1 small producer box and 1 small consumer box to start."
+variable "etl_groups" {
+  description = <<-EOT
+    The Auto Scaling Groups. The producer is exactly one instance. The block and address consumers scale on their
+    consumer group's lag. The transaction consumer is pinned to one instance: it pairs block and transaction messages
+    in memory, so splitting its partitions across instances would break the pairing.
+    ASSUMPTION: instance types are guesses (not load-tested); lag thresholds live in the kafka-clients module.
+  EOT
   type = map(object({
-    instance_type = string
-    min_size      = number
-    max_size      = number
-    desired_size  = number
-    kafka_user    = string
+    kafka_user                     = string
+    script                         = string
+    instance_type                  = string
+    min_size                       = number
+    max_size                       = number
+    desired_size                   = number
+    lag_group_id                   = optional(string)
+    run_lag_publisher              = optional(bool, false)
+    refresh_min_healthy_percentage = optional(number, 50)
   }))
   default = {
-    producers = {
-      instance_type = "t3.small"
-      min_size      = 1
-      max_size      = 3
-      desired_size  = 1
-      kafka_user    = "producer-app"
+    producer = {
+      kafka_user                     = "producer-app"
+      script                         = "producer/block_data_producer.py"
+      instance_type                  = "t3.small"
+      min_size                       = 1
+      max_size                       = 1
+      desired_size                   = 1
+      run_lag_publisher              = true
+      refresh_min_healthy_percentage = 0
     }
-    consumers = {
-      instance_type = "t3.small"
-      min_size      = 1
-      max_size      = 3
-      desired_size  = 1
+    consumer-block = {
       kafka_user    = "consumer-app"
+      script        = "consumers/block_data_consumer.py"
+      instance_type = "t3.medium"
+      min_size      = 1
+      max_size      = 5
+      desired_size  = 1
+      lag_group_id  = "bitcoin_block_consumer_group"
+    }
+    consumer-address = {
+      kafka_user    = "consumer-app"
+      script        = "consumers/address_data_consumer.py"
+      instance_type = "t3.medium"
+      min_size      = 1
+      max_size      = 5
+      desired_size  = 1
+      lag_group_id  = "bitcoin_address_consumer_group"
+    }
+    consumer-transaction = {
+      kafka_user    = "consumer-app"
+      script        = "consumers/transaction_data_consumer.py"
+      instance_type = "t3.medium"
+      min_size      = 1
+      max_size      = 1
+      desired_size  = 1
+      lag_group_id  = "bitcoin_consumer_group"
+      # One instance and it must not run twice at once (in-memory pairing): replace it by stopping, then starting.
+      refresh_min_healthy_percentage = 0
     }
   }
 }
