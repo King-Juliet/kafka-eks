@@ -1,6 +1,7 @@
-# Applied ONCE by hand after Argo CD is installed:  kubectl apply -f gitops/bootstrap/root-app.yaml
-# "App of apps": this one Application creates every other Application found under gitops/argocd/.
-# REPLACE the repoURL below (and in every file under gitops/argocd/) with your Git repo.
+# Applied by scripts/bootstrap-gitops.sh (CD) after Argo CD is installed. Safe to apply again.
+# "App of apps": this one Application creates every other Application found under gitops/argocd/,
+# in sync-wave order. Each wave waits for the previous one to be Healthy (see argocd-cm-health.yaml).
+# The repoURL below (and in every file under gitops/argocd/) is the Git repo Argo CD follows.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -21,3 +22,6 @@ spec:
     automated:
       prune: false # deleting an Application file never deletes what it deployed
       selfHeal: true
+    retry: # a wave that fails (e.g. a child app degraded for a while) is tried again, not abandoned
+      limit: 10
+      backoff: { duration: 1m, factor: 2, maxDuration: 15m }
