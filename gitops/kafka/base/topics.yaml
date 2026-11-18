@@ -6,9 +6,49 @@ metadata:
   namespace: kafka
   labels:
     strimzi.io/cluster: kafka-test
+  annotations:
+    argocd.argoproj.io/sync-wave: "1" # after the Kafka cluster is Ready (wave 0 inside this app)
 spec:
   topicName: app.orders
   partitions: 6
+  replicas: 3
+  config:
+    retention.ms: 604800000 # 7 days
+    min.insync.replicas: 2
+---
+# Topics for the Bitcoin ETL (apps/bitcoin-etl). The Kubernetes object name cannot contain "_", so
+# spec.topicName carries the real Kafka name the scripts use.
+# 5 partitions = the most consumers one consumer group can usefully run (the consumer ASGs max out at 5).
+# replicas 3 = one copy on each of the three brokers; min.insync.replicas 2 = a write needs 2 of the 3 copies.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: bitcoin-block-data
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-test
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  topicName: bitcoin_block_data
+  partitions: 5
+  replicas: 3
+  config:
+    retention.ms: 604800000 # 7 days
+    min.insync.replicas: 2
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: bitcoin-transaction-data
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-test
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  topicName: bitcoin_transaction_data
+  partitions: 5
   replicas: 3
   config:
     retention.ms: 604800000 # 7 days
