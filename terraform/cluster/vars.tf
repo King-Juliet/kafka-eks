@@ -27,9 +27,28 @@ variable "control_plane_subnet_ids" {
   type        = list(string)
 }
 
+variable "endpoint_public_access" {
+  description = "Expose the Kubernetes API publicly (only to api_allowed_cidrs). false = private endpoint only."
+  type        = bool
+  default     = true # keeps the old behaviour for anyone still calling this module the old way
+}
+
 variable "api_allowed_cidrs" {
-  description = "CIDRs allowed to reach the PUBLIC Kubernetes API endpoint (phase 1). Use your own /32, not 0.0.0.0/0."
+  description = "CIDRs allowed to reach the PUBLIC Kubernetes API endpoint. Ignored when endpoint_public_access is false. Use your own /32, not 0.0.0.0/0."
   type        = list(string)
+  default     = []
+}
+
+variable "bootstrap_creator_admin" {
+  description = "Give the identity that creates the cluster implicit cluster-admin. false = explicit access entries only (admin_principal_arns). Only read when the cluster is first created."
+  type        = bool
+  default     = true
+}
+
+variable "api_client_security_group_ids" {
+  description = "Security groups (name => id) allowed to reach the Kubernetes API on 443, e.g. { runner = \"sg-...\" }. Needed when the endpoint is private. Keys must be static strings."
+  type        = map(string)
+  default     = {}
 }
 
 variable "secrets_kms_key_arn" {

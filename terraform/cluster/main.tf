@@ -119,6 +119,20 @@ resource "aws_vpc_security_group_ingress_rule" "cluster_from_nodes" {
   description                  = "Node groups to cluster API"
 }
 
+# Private API endpoint: callers inside the VPC (CI runners, an SSM port-forward host) reach the API through the
+# control-plane ENIs, which carry this security group. Static map keys (e.g. "runner") keep for_each plannable
+# even though the security group IDs are only known after they are created.
+resource "aws_vpc_security_group_ingress_rule" "cluster_from_api_clients" {
+  for_each = var.api_client_security_group_ids
+
+  security_group_id            = aws_security_group.cluster.id
+  referenced_security_group_id = each.value
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+  description                  = "Kubernetes API from ${each.key}"
+}
+
 resource "aws_vpc_security_group_ingress_rule" "node_from_cluster" {
   for_each = local.node_from_cluster
 
@@ -191,19 +205,23 @@ resource "aws_eks_cluster" "this" {
   access_config {
     authentication_mode = "API" # access entries only, no aws-auth ConfigMap
 
-    # Whoever runs `terraform apply` becomes cluster-admin automatically. (Do not list that same identity in
-    # admin_principal_arns - EKS refuses a duplicate entry.)
-    bootstrap_cluster_creator_admin_permissions = true
+    # true  = whoever runs `terraform apply` becomes cluster-admin automatically. (Then do not list that same
+    #         identity in admin_principal_arns - EKS refuses a duplicate entry.)
+    # false = nobody is implicit; everyone who needs access is an explicit entry in admin_principal_arns.
+    #         The production pipeline uses this so access never depends on WHO ran the first apply.
+    # Create-time switch only (see ignore_changes below): an existing cluster keeps what it was built with.
+    bootstrap_cluster_creator_admin_permissions = var.bootstrap_creator_admin
   }
 
   vpc_config {
     subnet_ids         = var.control_plane_subnet_ids # control-plane ENIs (always the private tier)
     security_group_ids = [aws_security_group.cluster.id]
 
-    # Public (only from api_allowed_cidrs) + private. Tighten to private-only in phase 2.
-    endpoint_public_access  = true
+    # Private always on. Public only while var.endpoint_public_access is true (then only from api_allowed_cidrs).
+    # Production sets it to false: the API is reachable from inside the VPC only (runners, SSM port-forward).
+    endpoint_public_access  = var.endpoint_public_access
     endpoint_private_access = true
-    public_access_cidrs     = var.api_allowed_cidrs
+    public_access_cidrs     = var.endpoint_public_access ? var.api_allowed_cidrs : null
   }
 
   encryption_config {
