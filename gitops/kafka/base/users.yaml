@@ -9,11 +9,13 @@ metadata:
   namespace: kafka
   labels:
     strimzi.io/cluster: kafka-test
+  annotations:
+    argocd.argoproj.io/sync-wave: "1" # after the Kafka cluster is Ready
 spec:
   authentication:
     type: scram-sha-512
 ---
-# Producer apps: may create/write/describe topics named app.*
+# Producer apps: may create/write/describe topics named app.* and bitcoin_*
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaUser
 metadata:
@@ -21,6 +23,8 @@ metadata:
   namespace: kafka
   labels:
     strimzi.io/cluster: kafka-test
+  annotations:
+    argocd.argoproj.io/sync-wave: "1" # after the Kafka cluster is Ready
 spec:
   authentication:
     type: scram-sha-512
@@ -33,10 +37,15 @@ spec:
           patternType: prefix
         operations: [Describe, Write, Create]
       - resource:
+          type: topic
+          name: bitcoin_
+          patternType: prefix
+        operations: [Describe, Write] # topics themselves come from topics.yaml, so no Create here
+      - resource:
           type: cluster
         operations: [IdempotentWrite]
 ---
-# Consumer apps: may read topics app.* using consumer groups named app-*
+# Consumer apps: may read topics app.* and bitcoin_* using consumer groups named app-* and bitcoin_*
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaUser
 metadata:
@@ -44,6 +53,8 @@ metadata:
   namespace: kafka
   labels:
     strimzi.io/cluster: kafka-test
+  annotations:
+    argocd.argoproj.io/sync-wave: "1" # after the Kafka cluster is Ready
 spec:
   authentication:
     type: scram-sha-512
@@ -56,7 +67,46 @@ spec:
           patternType: prefix
         operations: [Describe, Read]
       - resource:
+          type: topic
+          name: bitcoin_
+          patternType: prefix
+        operations: [Describe, Read]
+      - resource:
           type: group
           name: app-
           patternType: prefix
         operations: [Read]
+      - resource:
+          type: group
+          name: bitcoin_
+          patternType: prefix
+        operations: [Read]
+---
+# Lag monitor: only LOOKS. It reads topic and consumer-group offsets so the lag publisher
+# (apps/bitcoin-etl/ops/lag_publisher.py) can work out how far behind each consumer group is.
+# No Read/Write on any data.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: lag-monitor
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-test
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: bitcoin_
+          patternType: prefix
+        operations: [Describe]
+      - resource:
+          type: group
+          name: bitcoin_
+          patternType: prefix
+        operations: [Describe]
