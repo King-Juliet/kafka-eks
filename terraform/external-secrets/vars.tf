@@ -8,7 +8,7 @@ variable "region" {
 }
 
 variable "chart_version" {
-  description = "external-secrets chart version."
+  description = "external-secrets chart version. Selects the vendored file external-secrets-<version>.tgz in this folder, so a new version needs its .tgz added first."
   type        = string
 }
 

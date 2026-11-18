@@ -110,7 +110,7 @@ resource "helm_release" "operator" {
   name             = "external-secrets"
   namespace        = var.namespace
   create_namespace = true
-  chart            = "${path.module}/external-secrets-2.15.0.tgz"
+  chart            = "${path.module}/external-secrets-${var.chart_version}.tgz"
 
   values = [yamlencode({
     installCRDs  = true
