@@ -1,0 +1,135 @@
+# Makes Argo CD sync waves actually WAIT.
+#
+# A sync wave only holds back the next wave until everything in the current wave is "Healthy". Argo CD cannot judge
+# these custom kinds by itself: without the checks below an Application, a Kafka cluster or a KafkaTopic counts as
+# Healthy the moment it is created, and wave 1 would start while wave 0 is still installing.
+#
+# Rules used here:
+#   Application          Healthy only when Synced AND its own health is Healthy. Degraded stays Degraded.
+#   Kafka / KafkaTopic / KafkaUser   Healthy when the Strimzi "Ready" condition is True; otherwise Progressing.
+#                        (Strimzi is often briefly NotReady during a normal reconcile, so this never says Degraded.)
+#   ExternalSecret / PushSecret      Healthy when "Ready" is True; otherwise Progressing (the AWS secret may not exist
+#                        yet, e.g. before the one-time token is typed in).
+#
+# Applied with server-side apply under its own field manager by scripts/bootstrap-gitops.sh, so it only owns the keys
+# below and never fights with the Argo CD install manifest over argocd-cm.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  resource.customizations.health.argoproj.io_Application: |
+    local hs = {}
+    hs.status = "Progressing"
+    hs.message = "waiting for the application to sync and become healthy"
+    if obj.status ~= nil then
+      local health = nil
+      local sync = nil
+      if obj.status.health ~= nil then health = obj.status.health.status end
+      if obj.status.sync ~= nil then sync = obj.status.sync.status end
+      if health == "Healthy" and sync == "Synced" then
+        hs.status = "Healthy"
+        hs.message = "synced and healthy"
+      elseif health == "Degraded" then
+        hs.status = "Degraded"
+        hs.message = "application is degraded"
+      elseif health ~= nil then
+        hs.message = "health=" .. health .. " sync=" .. tostring(sync)
+      end
+    end
+    return hs
+  resource.customizations.health.kafka.strimzi.io_Kafka: |
+    local hs = {}
+    hs.status = "Progressing"
+    hs.message = "waiting for the Kafka cluster to be Ready"
+    if obj.status ~= nil and obj.status.conditions ~= nil then
+      local gen = obj.metadata.generation
+      local seen = obj.status.observedGeneration
+      if seen ~= nil and gen ~= nil and seen < gen then
+        hs.message = "the operator has not processed the latest change yet"
+        return hs
+      end
+      for _, c in ipairs(obj.status.conditions) do
+        if c.type == "Ready" and c.status == "True" then
+          hs.status = "Healthy"
+          hs.message = "Kafka is Ready"
+          return hs
+        end
+        if c.type == "NotReady" and c.status == "True" then
+          hs.message = (c.reason or "NotReady") .. ": " .. (c.message or "")
+        end
+      end
+    end
+    return hs
+  resource.customizations.health.kafka.strimzi.io_KafkaTopic: |
+    local hs = {}
+    hs.status = "Progressing"
+    hs.message = "waiting for the topic to be Ready"
+    if obj.status ~= nil and obj.status.conditions ~= nil then
+      for _, c in ipairs(obj.status.conditions) do
+        if c.type == "Ready" and c.status == "True" then
+          hs.status = "Healthy"
+          hs.message = "topic is Ready"
+          return hs
+        end
+        if c.type == "NotReady" and c.status == "True" then
+          hs.message = (c.reason or "NotReady") .. ": " .. (c.message or "")
+        end
+      end
+    end
+    return hs
+  resource.customizations.health.kafka.strimzi.io_KafkaUser: |
+    local hs = {}
+    hs.status = "Progressing"
+    hs.message = "waiting for the user to be Ready"
+    if obj.status ~= nil and obj.status.conditions ~= nil then
+      for _, c in ipairs(obj.status.conditions) do
+        if c.type == "Ready" and c.status == "True" then
+          hs.status = "Healthy"
+          hs.message = "user is Ready"
+          return hs
+        end
+        if c.type == "NotReady" and c.status == "True" then
+          hs.message = (c.reason or "NotReady") .. ": " .. (c.message or "")
+        end
+      end
+    end
+    return hs
+  resource.customizations.health.external-secrets.io_ExternalSecret: |
+    local hs = {}
+    hs.status = "Progressing"
+    hs.message = "waiting for the secret to sync"
+    if obj.status ~= nil and obj.status.conditions ~= nil then
+      for _, c in ipairs(obj.status.conditions) do
+        if c.type == "Ready" and c.status == "True" then
+          hs.status = "Healthy"
+          hs.message = "secret synced"
+          return hs
+        end
+        if c.type == "Ready" then
+          hs.message = (c.reason or "NotReady") .. ": " .. (c.message or "")
+        end
+      end
+    end
+    return hs
+  resource.customizations.health.external-secrets.io_PushSecret: |
+    local hs = {}
+    hs.status = "Progressing"
+    hs.message = "waiting for the push to finish"
+    if obj.status ~= nil and obj.status.conditions ~= nil then
+      for _, c in ipairs(obj.status.conditions) do
+        if c.type == "Ready" and c.status == "True" then
+          hs.status = "Healthy"
+          hs.message = "pushed"
+          return hs
+        end
+        if c.type == "Ready" then
+          hs.message = (c.reason or "NotReady") .. ": " .. (c.message or "")
+        end
+      end
+    end
+    return hs
