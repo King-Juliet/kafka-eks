@@ -1,0 +1,55 @@
+# Wave 5: the runners themselves. Workflows select them with `runs-on: kafka-eks-arc` (the release name).
+# 0 runners while idle; pods appear when a job is queued and disappear when it finishes.
+# Runner pods get NO AWS identity of their own. Jobs sign in to AWS by assuming the deploy role through
+# GitHub's OIDC (main branch only), the same way the GitHub-hosted jobs do.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-runner-set
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.15.1
+    helm:
+      releaseName: kafka-eks-arc
+      valuesObject:
+        githubConfigUrl: https://github.com/King-Juliet/kafka-eks
+        githubConfigSecret: arc-github-config # created by arc-config from /github/runner-auth
+        minRunners: 0
+        maxRunners: 2 # ASSUMPTION: the deploy jobs run one after another; 2 leaves room for the drift check
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+        template:
+          metadata:
+            annotations:
+              # Karpenter must not consolidate or replace the node while a job is running on it.
+              karpenter.sh/do-not-disrupt: "true"
+          spec:
+            nodeSelector:
+              workload: general
+            containers:
+              - name: runner
+                image: ghcr.io/actions/actions-runner:latest # ASSUMPTION: unpinned; pin a version once it works
+                command: ["/home/runner/run.sh"]
+                resources:
+                  requests: { cpu: 500m, memory: 1Gi }
+                  limits: { memory: 3Gi }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff: { duration: 30s, factor: 2, maxDuration: 10m }
