@@ -1,4 +1,4 @@
-# Applied ONCE by hand: registers the Strimzi OCI Helm registry with Argo CD.
+# Applied by scripts/bootstrap-gitops.sh (CD): registers the Strimzi OCI Helm registry with Argo CD.
 # (Argo CD needs this because the chart is pulled from an OCI registry, not a classic Helm repo.)
 apiVersion: v1
 kind: Secret
