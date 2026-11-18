@@ -1,6 +1,6 @@
 # # CI: tests, Terraform checks, security checks. Changes nothing in AWS.
 # # Runs on every pull request, and cd.yml calls it on every push to main (deploy only starts if this passes).
-# # Everything runs on GitHub-hosted runners; the one AWS call is a read-only `terraform plan` of layer 1.
+# # Everything runs on GitHub-hosted runners; the one AWS call is a `terraform plan` of layer 1 (it changes nothing).
 # #
 # # Versions: TF_VERSION and PYTHON_VERSION below are the same in ci.yml, cd.yml and drift.yml
 # # (tests/test_workflows.py fails if they drift apart).
@@ -23,6 +23,7 @@
 #   PYTHON_VERSION: "3.12"
 #   TF_IN_AUTOMATION: "1"
 #   TF_INPUT: "0"
+#   TF_VAR_deploy_role_arn: ${{ vars.AWS_ROLE_ARN }} # layer 1 makes this role a cluster admin
 
 # jobs:
 #   terraform:
@@ -33,7 +34,6 @@
 #       fail-fast: false
 #       matrix:
 #         include:
-#           - { name: bootstrap, root: terraform/bootstrap }
 #           - { name: layer1, root: terraform/us-east-1 }
 #           - { name: layer2, root: terraform/us-east-1-platform }
 #     steps:
@@ -45,7 +45,7 @@
 #           terraform_wrapper: false # the wrapper rewrites stdout, which breaks `terraform output -json` and `show -json`
 
 #       - name: Format
-#         if: matrix.name == 'bootstrap' # one run is enough: it covers every folder
+#         if: matrix.name == 'layer1' # one run is enough: it covers every folder
 #         run: bash scripts/tf_run.sh fmt fmt -check -recursive -diff -no-color terraform
 
 #       - name: Init (no backend, no AWS)
@@ -186,9 +186,9 @@
 #           if-no-files-found: ignore
 
 #   plan:
-#     name: plan (layer 1, read-only)
-#     # Pull requests from forks get no AWS token, so they skip this job.
-#     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+#     name: plan (layer 1)
+#     # The AWS role trusts the main branch only, so pull requests skip this job (it runs from cd.yml on every push to main).
+#     if: github.event_name != 'pull_request'
 #     runs-on: ubuntu-24.04
 #     timeout-minutes: 30
 #     permissions:
@@ -202,18 +202,18 @@
 #           terraform_version: ${{ env.TF_VERSION }}
 #           terraform_wrapper: false
 
-#       - name: Stop early if AWS_ACCOUNT_ID is not set
-#         if: vars.AWS_ACCOUNT_ID == ''
+#       - name: Stop early if AWS_ROLE_ARN is not set
+#         if: vars.AWS_ROLE_ARN == ''
 #         run: |
-#           echo "::error::Set the repository variable AWS_ACCOUNT_ID to your 12-digit account id (Settings > Secrets and variables > Actions > Variables)."
+#           echo "::error::Set the repository variable AWS_ROLE_ARN to the ARN of your GitHub OIDC role (Settings > Secrets and variables > Actions > Variables)."
 #           exit 1
 
-#       - name: Sign in to AWS (OIDC, read-only role)
+#       - name: Sign in to AWS (OIDC)
 #         uses: aws-actions/configure-aws-credentials@v6
 #         with:
-#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-ci
+#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 #           aws-region: ${{ env.AWS_REGION }}
-#           role-session-name: gh-ci-${{ github.run_id }}
+#           role-session-name: gh-${{ github.run_id }}
 
 #       - name: Init
 #         run: bash scripts/tf_run.sh plan-init -chdir=terraform/us-east-1 init -input=false -no-color

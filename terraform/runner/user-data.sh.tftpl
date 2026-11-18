@@ -1,0 +1,76 @@
+#!/bin/bash
+# Bootstrap CI runner (Amazon Linux 2023). Installs the GitHub Actions runner and keeps registering
+# one-job-only (ephemeral) runners for as long as the instance lives.
+set -euo pipefail
+exec > >(tee /var/log/ci-runner-bootstrap.log) 2>&1
+
+# ASSUMPTION: these package names exist in AL2023's repositories (python3.11 / python3.11-pip). Not verified from
+# here; if one is missing this script stops at the line below and the log above says which.
+dnf install -y git jq tar gzip unzip libicu python3.11 python3.11-pip
+
+id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
+
+install -d -o runner -g runner /opt/actions-runner
+cd /opt/actions-runner
+curl -fsSL -o runner.tar.gz \
+  "https://github.com/actions/runner/releases/download/v${runner_version}/actions-runner-linux-x64-${runner_version}.tar.gz"
+echo "${runner_sha256}  runner.tar.gz" | sha256sum -c -
+tar -xzf runner.tar.gz
+rm runner.tar.gz
+chown -R runner:runner /opt/actions-runner
+./bin/installdependencies.sh || true # AL2023 may not be on its supported list; libicu is installed above
+
+cat > /usr/local/bin/ci-runner-loop.sh <<'LOOP'
+#!/bin/bash
+# Register -> run exactly one job -> exit -> repeat. Never exits on its own: systemd would just restart it.
+set -uo pipefail
+cd /opt/actions-runner
+while true; do
+  PAT="$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$AUTH_SECRET_ID" \
+        --query SecretString --output text 2>/dev/null | jq -r '.github_token // empty')"
+  if [ -z "$PAT" ]; then
+    echo "runner token not in $AUTH_SECRET_ID yet; retrying in 30s"
+    sleep 30
+    continue
+  fi
+  TOKEN="$(curl -fsS -X POST -H "Authorization: Bearer $PAT" -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/$REPO/actions/runners/registration-token" | jq -r '.token // empty')"
+  if [ -z "$TOKEN" ]; then
+    echo "could not get a registration token; retrying in 30s"
+    sleep 30
+    continue
+  fi
+  rm -rf _work
+  ./config.sh --unattended --ephemeral --replace \
+    --url "https://github.com/$REPO" --token "$TOKEN" \
+    --name "bootstrap-$(hostname)-$(date +%s)" --labels "$LABELS" --work _work
+  ./run.sh
+  sleep 2
+done
+LOOP
+chmod +x /usr/local/bin/ci-runner-loop.sh
+
+cat > /etc/systemd/system/ci-runner.service <<UNIT
+[Unit]
+Description=GitHub Actions ephemeral runner loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=runner
+Environment=AWS_REGION=${region}
+Environment=AWS_DEFAULT_REGION=${region}
+Environment=REPO=${repo}
+Environment=LABELS=${labels}
+Environment=AUTH_SECRET_ID=${auth_secret_id}
+ExecStart=/usr/local/bin/ci-runner-loop.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now ci-runner.service
+echo "runner bootstrap complete"

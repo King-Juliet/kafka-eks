@@ -40,6 +40,7 @@
 #   TF_VERSION: "1.15.8" # same value in ci.yml, cd.yml and drift.yml (tests/test_workflows.py checks)
 #   PYTHON_VERSION: "3.12"
 #   TF_INPUT: "0"
+#   TF_VAR_deploy_role_arn: ${{ vars.AWS_ROLE_ARN }} # layer 1 makes this role a cluster admin
 #   TF_LOG: ${{ inputs.tf_log }}
 
 # jobs:
@@ -63,6 +64,8 @@
 #       etl_min_healthy: ${{ steps.out.outputs.etl_min_healthy }}
 #       scripts_bucket: ${{ steps.out.outputs.scripts_bucket }}
 #       db_address: ${{ steps.out.outputs.db_address }}
+#       db_port: ${{ steps.out.outputs.db_port }}
+#       db_name: ${{ steps.out.outputs.db_name }}
 #       db_master_secret_arn: ${{ steps.out.outputs.db_master_secret_arn }}
 #       db_app_secret_arn: ${{ steps.out.outputs.db_app_secret_arn }}
 #     steps:
@@ -72,13 +75,13 @@
 #           terraform_version: ${{ env.TF_VERSION }}
 #           terraform_wrapper: false # the wrapper rewrites stdout, which breaks `terraform output -json` and `show -json`
 
-#       - name: Sign in to AWS (OIDC, deploy role)
+#       - name: Sign in to AWS (OIDC)
 #         uses: aws-actions/configure-aws-credentials@v6
 #         with:
-#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-cd
+#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 #           aws-region: ${{ env.AWS_REGION }}
-#           role-session-name: gh-cd-${{ github.run_id }}
-#           role-duration-seconds: 7200 # the cd role allows up to 7200
+#           role-session-name: gh-${{ github.run_id }}
+#           role-duration-seconds: 7200 # the role's Maximum session duration must be 2 hours or more (README step 1)
 
 #       - name: Init
 #         run: bash scripts/tf_run.sh layer1-init -chdir=terraform/us-east-1 init -input=false -no-color
@@ -104,9 +107,16 @@
 #             echo "etl_min_healthy=$(jq -c '.etl_min_healthy.value' <<<"$out")"
 #             echo "scripts_bucket=$(jq -r '.scripts_bucket.value' <<<"$out")"
 #             echo "db_address=$(jq -r '.db_address.value' <<<"$out")"
+#             echo "db_port=$(jq -r '.db_endpoint.value.port' <<<"$out")"
+#             echo "db_name=$(jq -r '.db_endpoint.value.name' <<<"$out")"
 #             echo "db_master_secret_arn=$(jq -r '.db_master_secret_arn.value' <<<"$out")"
 #             echo "db_app_secret_arn=$(jq -r '.db_app_secret_arn.value' <<<"$out")"
 #           } >> "$GITHUB_OUTPUT"
+
+#       - name: Store the database address where the ETL instances read it
+#         run: |
+#           endpoint="$(terraform -chdir=terraform/us-east-1 output -json db_endpoint | jq -c .)"
+#           aws secretsmanager put-secret-value --secret-id /kafka-eks/config/db-endpoint --secret-string "$endpoint" > /dev/null
 
 #       - name: Upload logs (only when something failed)
 #         if: failure()
@@ -133,12 +143,12 @@
 #       target: ${{ steps.pick.outputs.target }}
 #     steps:
 #       - uses: actions/checkout@v6
-#       - name: Sign in to AWS (OIDC, deploy role)
+#       - name: Sign in to AWS (OIDC)
 #         uses: aws-actions/configure-aws-credentials@v6
 #         with:
-#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-cd
+#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 #           aws-region: ${{ env.AWS_REGION }}
-#           role-session-name: gh-cd-${{ github.run_id }}
+#           role-session-name: gh-${{ github.run_id }}
 #       - name: Pick (and start the EC2 runner if ARC is not ready)
 #         id: pick
 #         env:
@@ -199,13 +209,13 @@
 #           "$RUNNER_TEMP/venv/bin/python" -m pip install --quiet --disable-pip-version-check -r requirements-deploy.txt
 #           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
-#       - name: Sign in to AWS (OIDC, deploy role)
+#       - name: Sign in to AWS (OIDC)
 #         uses: aws-actions/configure-aws-credentials@v6
 #         with:
-#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-cd
+#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 #           aws-region: ${{ env.AWS_REGION }}
-#           role-session-name: gh-cd-${{ github.run_id }}
-#           role-duration-seconds: 7200 # the cd role allows up to 7200
+#           role-session-name: gh-${{ github.run_id }}
+#           role-duration-seconds: 7200 # the role's Maximum session duration must be 2 hours or more (README step 1)
 
 #       - name: Kubernetes access
 #         run: |
@@ -238,13 +248,13 @@
 #       - name: Database - migrations
 #         env:
 #           DB_HOST: ${{ needs.layer1.outputs.db_address }}
+#           DB_PORT: ${{ needs.layer1.outputs.db_port }}
+#           DB_NAME: ${{ needs.layer1.outputs.db_name }}
 #           DB_MASTER_SECRET_ARN: ${{ needs.layer1.outputs.db_master_secret_arn }}
 #           DB_APP_SECRET_ARN: ${{ needs.layer1.outputs.db_app_secret_arn }}
 #         run: |
-#           port="$(aws ssm get-parameter --name /kafka-eks/db/port --query Parameter.Value --output text)"
-#           name="$(aws ssm get-parameter --name /kafka-eks/db/name --query Parameter.Value --output text)"
 #           bash scripts/capture.sh db-migrate python3 scripts/db_migrate.py \
-#             --host "$DB_HOST" --port "$port" --dbname "$name" \
+#             --host "$DB_HOST" --port "$DB_PORT" --dbname "$DB_NAME" \
 #             --master-secret-arn "$DB_MASTER_SECRET_ARN" --app-secret-id "$DB_APP_SECRET_ARN"
 
 #       # ---- ETL code
@@ -283,12 +293,12 @@
 #       id-token: write
 #     steps:
 #       - uses: actions/checkout@v6
-#       - name: Sign in to AWS (OIDC, deploy role)
+#       - name: Sign in to AWS (OIDC)
 #         uses: aws-actions/configure-aws-credentials@v6
 #         with:
-#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-cd
+#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 #           aws-region: ${{ env.AWS_REGION }}
-#           role-session-name: gh-cd-${{ github.run_id }}
+#           role-session-name: gh-${{ github.run_id }}
 #       - name: Scale the bootstrap runner down (only if ARC is ready)
 #         env:
 #           RUNNER_ASG: ${{ needs.layer1.outputs.runner_asg }}
