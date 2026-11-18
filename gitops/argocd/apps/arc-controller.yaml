@@ -1,0 +1,42 @@
+# Wave 4: the Actions Runner Controller. It watches GitHub for queued jobs and starts runner pods for them.
+# Installed through Argo CD on purpose and NOT through Terraform: the pipeline's own deploy jobs run on these
+# runners, and a runner must never be the thing that rewrites the runner software it is running on.
+# Chart 0.15.1 was marked "Latest" on the releases page on 2026-11-18 (the page does not show the year).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set-controller
+    targetRevision: 0.15.1
+    helm:
+      releaseName: arc
+      valuesObject:
+        # The runner set chart refers to the controller's service account by name: <releaseName>-gha-rs-controller.
+        nodeSelector:
+          workload: system
+        tolerations:
+          - key: CriticalAddonsOnly
+            operator: Exists
+        resources:
+          requests: { cpu: 100m, memory: 128Mi }
+          limits: { memory: 256Mi }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-systems
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true # the chart's CRDs are large
+    retry:
+      limit: 10
+      backoff: { duration: 30s, factor: 2, maxDuration: 10m }
