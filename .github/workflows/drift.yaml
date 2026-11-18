@@ -1,0 +1,136 @@
+# # Nightly drift check: does what is in AWS still match what is in Git? Changes nothing.
+# # A drift (or any error) fails the run, and GitHub e-mails the repository owner about failed scheduled runs.
+# # TF_VERSION is the same in ci.yml, cd.yml and drift.yml (tests/test_workflows.py checks).
+# name: drift
+
+# on:
+#   schedule:
+#     - cron: "23 3 * * *" # 03:23 UTC
+#   workflow_dispatch:
+
+# concurrency:
+#   group: drift
+#   cancel-in-progress: false
+
+# permissions:
+#   contents: read
+
+# env:
+#   AWS_REGION: us-east-1
+#   TF_VERSION: "1.15.8"
+#   TF_IN_AUTOMATION: "1"
+#   TF_INPUT: "0"
+
+# jobs:
+#   layer1:
+#     name: layer 1 (AWS)
+#     runs-on: ubuntu-24.04
+#     timeout-minutes: 30
+#     permissions:
+#       contents: read
+#       id-token: write
+#     steps:
+#       - uses: actions/checkout@v6
+
+#       - uses: hashicorp/setup-terraform@v4
+#         with:
+#           terraform_version: ${{ env.TF_VERSION }}
+#           terraform_wrapper: false
+
+#       - name: Stop early if AWS_ACCOUNT_ID is not set
+#         if: vars.AWS_ACCOUNT_ID == ''
+#         run: |
+#           echo "::error::Set the repository variable AWS_ACCOUNT_ID to your 12-digit account id (Settings > Secrets and variables > Actions > Variables)."
+#           exit 1
+
+#       - name: Sign in to AWS (OIDC, read-only role is enough to compare)
+#         uses: aws-actions/configure-aws-credentials@v6
+#         with:
+#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-ci
+#           aws-region: ${{ env.AWS_REGION }}
+#           role-session-name: gh-ci-${{ github.run_id }}
+
+#       - name: Init
+#         run: bash scripts/tf_run.sh drift1-init -chdir=terraform/us-east-1 init -input=false -no-color
+
+#       - name: Plan (exit code 2 = drift)
+#         run: bash scripts/tf_run.sh drift1-plan -chdir=terraform/us-east-1 plan -input=false -no-color -lock=false -detailed-exitcode
+
+#       - name: Upload logs (only when something failed)
+#         if: failure()
+#         uses: actions/upload-artifact@v6
+#         with:
+#           name: failure-logs-drift-layer1
+#           path: |
+#             tf-artifacts/
+#             terraform/**/crash.log
+#           retention-days: 3
+#           if-no-files-found: ignore
+
+#   arc:
+#     name: is ARC up?
+#     runs-on: ubuntu-24.04
+#     timeout-minutes: 10
+#     permissions:
+#       contents: read
+#       id-token: write
+#     outputs:
+#       ready: ${{ steps.r.outputs.ready }}
+#     steps:
+#       - name: Sign in to AWS (OIDC, read-only role)
+#         uses: aws-actions/configure-aws-credentials@v6
+#         with:
+#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-ci
+#           aws-region: ${{ env.AWS_REGION }}
+#           role-session-name: gh-ci-${{ github.run_id }}
+
+#       - id: r
+#         run: |
+#           v="$(aws ssm get-parameter --name /kafka-eks/ci/arc-ready --query Parameter.Value --output text 2>/dev/null || echo false)"
+#           echo "ready=$v" >> "$GITHUB_OUTPUT"
+
+#   layer2:
+#     name: layer 2 (cluster add-ons)
+#     needs: arc
+#     # The Kubernetes API is private, so this needs an in-VPC runner. Skipped (not failed) while ARC is not up.
+#     if: needs.arc.outputs.ready == 'true'
+#     runs-on: kafka-eks-arc
+#     timeout-minutes: 45
+#     permissions:
+#       contents: read
+#       id-token: write
+#     steps:
+#       - uses: actions/checkout@v6
+
+#       - uses: hashicorp/setup-terraform@v4
+#         with:
+#           terraform_version: ${{ env.TF_VERSION }}
+#           terraform_wrapper: false
+
+#       - name: CLI tools (kubectl, AWS CLI, jq where the runner image lacks them; no sudo)
+#         run: bash scripts/install_tools.sh
+
+#       - name: Sign in to AWS (OIDC, deploy role)
+#         # The CI role is not a cluster admin, so it cannot read cluster objects. Scheduled runs are on main, which the deploy role trusts.
+#         uses: aws-actions/configure-aws-credentials@v6
+#         with:
+#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-cd
+#           aws-region: ${{ env.AWS_REGION }}
+#           role-session-name: gh-cd-${{ github.run_id }}
+
+#       - name: Init
+#         run: bash scripts/tf_run.sh drift2-init -chdir=terraform/us-east-1-platform init -input=false -no-color
+
+#       - name: Plan (exit code 2 = drift)
+#         run: bash scripts/tf_run.sh drift2-plan -chdir=terraform/us-east-1-platform plan -input=false -no-color -lock=false -detailed-exitcode
+
+#       - name: Upload logs (only when something failed)
+#         if: failure()
+#         uses: actions/upload-artifact@v6
+#         with:
+#           name: failure-logs-drift-layer2
+#           path: |
+#             tf-artifacts/
+#             terraform/**/crash.log
+#           retention-days: 3
+#           if-no-files-found: ignore

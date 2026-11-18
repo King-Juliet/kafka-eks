@@ -1,0 +1,295 @@
+# # CD: deploys everything, with no manual step. Runs on every push to main, and only if CI (ci.yml) passed.
+# #
+# #   ci        the whole CI workflow, called as a job. Every job below needs it.
+# #   layer1    AWS-only Terraform (network, EKS, RDS, ASGs, buckets...) on a GitHub-hosted runner.
+# #   runner    picks the in-VPC runner: ARC once it exists, otherwise starts the small EC2 bootstrap runner.
+# #   deploy    on that in-VPC runner (the Kubernetes API and the database are private):
+# #               platform Terraform -> Argo CD + sync waves -> database migrations -> ETL release -> checks
+# #   finish    once ARC works, turns the EC2 bootstrap runner off.
+# #
+# # Any failed step stops the run; its logs and an error summary are uploaded as the "failure-logs-*" artifact.
+# name: cd
+
+# on:
+#   push:
+#     branches: [main]
+#   workflow_dispatch:
+#     inputs:
+#       runner:
+#         description: Where the in-VPC jobs run. auto = ARC if it is ready, else the EC2 bootstrap runner.
+#         type: choice
+#         options: [auto, ec2, arc]
+#         default: auto
+#       tf_log:
+#         description: Terraform debug level for a re-run (TRACE, DEBUG, INFO). Leave empty normally; the debug log can contain request details.
+#         type: string
+#         default: ""
+
+# # One deploy at a time, never cancelled half way through an apply.
+# concurrency:
+#   group: cd
+#   cancel-in-progress: false
+
+# permissions:
+#   contents: read
+
+# env:
+#   AWS_REGION: us-east-1
+#   CLUSTER_NAME: kafka-test
+#   TF_IN_AUTOMATION: "1"
+#   TF_VERSION: "1.15.8" # same value in ci.yml, cd.yml and drift.yml (tests/test_workflows.py checks)
+#   PYTHON_VERSION: "3.12"
+#   TF_INPUT: "0"
+#   TF_LOG: ${{ inputs.tf_log }}
+
+# jobs:
+#   ci:
+#     uses: ./.github/workflows/ci.yml
+#     permissions:
+#       contents: read
+#       id-token: write
+
+#   layer1:
+#     name: layer 1 (AWS)
+#     needs: ci
+#     runs-on: ubuntu-24.04
+#     timeout-minutes: 120
+#     permissions:
+#       contents: read
+#       id-token: write
+#     outputs:
+#       runner_asg: ${{ steps.out.outputs.runner_asg }}
+#       etl_asgs: ${{ steps.out.outputs.etl_asgs }}
+#       etl_min_healthy: ${{ steps.out.outputs.etl_min_healthy }}
+#       scripts_bucket: ${{ steps.out.outputs.scripts_bucket }}
+#       db_address: ${{ steps.out.outputs.db_address }}
+#       db_master_secret_arn: ${{ steps.out.outputs.db_master_secret_arn }}
+#       db_app_secret_arn: ${{ steps.out.outputs.db_app_secret_arn }}
+#     steps:
+#       - uses: actions/checkout@v6
+#       - uses: hashicorp/setup-terraform@v4
+#         with:
+#           terraform_version: ${{ env.TF_VERSION }}
+#           terraform_wrapper: false # the wrapper rewrites stdout, which breaks `terraform output -json` and `show -json`
+
+#       - name: Sign in to AWS (OIDC, deploy role)
+#         uses: aws-actions/configure-aws-credentials@v6
+#         with:
+#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-cd
+#           aws-region: ${{ env.AWS_REGION }}
+#           role-session-name: gh-cd-${{ github.run_id }}
+#           role-duration-seconds: 7200 # the cd role allows up to 7200
+
+#       - name: Init
+#         run: bash scripts/tf_run.sh layer1-init -chdir=terraform/us-east-1 init -input=false -no-color
+
+#       - name: Plan
+#         run: bash scripts/tf_run.sh layer1-plan -chdir=terraform/us-east-1 plan -input=false -no-color -lock-timeout=10m -out=tfplan
+
+#       - name: Plan guard - no destroy or replace of anything holding data or identity
+#         run: |
+#           terraform -chdir=terraform/us-east-1 show -json tfplan > "$RUNNER_TEMP/layer1-plan.json"
+#           bash scripts/capture.sh layer1-plan-guard python3 scripts/plan_guard.py "$RUNNER_TEMP/layer1-plan.json" --allow .github/plan-guard-allow.txt
+
+#       - name: Apply
+#         run: bash scripts/tf_run.sh layer1-apply -chdir=terraform/us-east-1 apply -input=false -no-color -lock-timeout=10m tfplan
+
+#       - name: Read the outputs the next jobs need
+#         id: out
+#         run: |
+#           out="$(terraform -chdir=terraform/us-east-1 output -json)"
+#           {
+#             echo "runner_asg=$(jq -r '.runner_asg_name.value' <<<"$out")"
+#             echo "etl_asgs=$(jq -c '.etl_asg_names.value' <<<"$out")"
+#             echo "etl_min_healthy=$(jq -c '.etl_min_healthy.value' <<<"$out")"
+#             echo "scripts_bucket=$(jq -r '.scripts_bucket.value' <<<"$out")"
+#             echo "db_address=$(jq -r '.db_address.value' <<<"$out")"
+#             echo "db_master_secret_arn=$(jq -r '.db_master_secret_arn.value' <<<"$out")"
+#             echo "db_app_secret_arn=$(jq -r '.db_app_secret_arn.value' <<<"$out")"
+#           } >> "$GITHUB_OUTPUT"
+
+#       - name: Upload logs (only when something failed)
+#         if: failure()
+#         uses: actions/upload-artifact@v6
+#         with:
+#           name: failure-logs-cd-layer1
+#           path: |
+#             tf-artifacts/
+#             terraform/**/crash.log
+#             terraform/**/errored.tfstate # the only copy of the new state if Terraform could not save it to S3; can contain secrets
+#           retention-days: 3
+#           if-no-files-found: ignore
+
+#   runner:
+#     name: pick the in-VPC runner
+#     needs: layer1
+#     runs-on: ubuntu-24.04
+#     timeout-minutes: 30
+#     permissions:
+#       contents: read
+#       id-token: write
+#     outputs:
+#       labels: ${{ steps.pick.outputs.labels }}
+#       target: ${{ steps.pick.outputs.target }}
+#     steps:
+#       - uses: actions/checkout@v6
+#       - name: Sign in to AWS (OIDC, deploy role)
+#         uses: aws-actions/configure-aws-credentials@v6
+#         with:
+#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-cd
+#           aws-region: ${{ env.AWS_REGION }}
+#           role-session-name: gh-cd-${{ github.run_id }}
+#       - name: Pick (and start the EC2 runner if ARC is not ready)
+#         id: pick
+#         env:
+#           MODE: ${{ inputs.runner || 'auto' }}
+#           RUNNER_ASG: ${{ needs.layer1.outputs.runner_asg }}
+#         run: bash scripts/capture.sh pick-runner bash scripts/pick_runner.sh pick
+#       - name: Upload logs (only when something failed)
+#         if: failure()
+#         uses: actions/upload-artifact@v6
+#         with:
+#           name: failure-logs-cd-runner
+#           path: |
+#             tf-artifacts/
+#             terraform/**/crash.log
+#           retention-days: 3
+#           if-no-files-found: ignore
+
+#   deploy:
+#     name: deploy (in the VPC)
+#     needs: [layer1, runner]
+#     runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
+#     timeout-minutes: 240
+#     permissions:
+#       contents: read
+#       id-token: write
+#     steps:
+#       - uses: actions/checkout@v6
+#       - uses: hashicorp/setup-terraform@v4
+#         with:
+#           terraform_version: ${{ env.TF_VERSION }}
+#           terraform_wrapper: false # the wrapper rewrites stdout, which breaks `terraform output -json` and `show -json`
+
+#       - name: CLI tools (kubectl, AWS CLI, jq where the runner image lacks them; no sudo)
+#         run: bash scripts/install_tools.sh
+
+#       - name: Find Python 3.11 or newer on the runner
+#         id: py
+#         run: |
+#           for p in python3.13 python3.12 python3.11; do
+#             if command -v "$p" >/dev/null 2>&1; then
+#               echo "path=$(command -v "$p")" >> "$GITHUB_OUTPUT"
+#               exit 0
+#             fi
+#           done
+#           echo "path=" >> "$GITHUB_OUTPUT"
+
+#       - name: Python (only if the runner has none)
+#         if: steps.py.outputs.path == ''
+#         uses: actions/setup-python@v6
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: Python packages for the deploy scripts (throw-away virtualenv)
+#         env:
+#           PY: ${{ steps.py.outputs.path }}
+#         run: |
+#           "${PY:-python3}" -m venv "$RUNNER_TEMP/venv"
+#           "$RUNNER_TEMP/venv/bin/python" -m pip install --quiet --disable-pip-version-check -r requirements-deploy.txt
+#           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+#       - name: Sign in to AWS (OIDC, deploy role)
+#         uses: aws-actions/configure-aws-credentials@v6
+#         with:
+#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-cd
+#           aws-region: ${{ env.AWS_REGION }}
+#           role-session-name: gh-cd-${{ github.run_id }}
+#           role-duration-seconds: 7200 # the cd role allows up to 7200
+
+#       - name: Kubernetes access
+#         run: |
+#           aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
+#           kubectl get namespace kube-system
+
+#       # ---- platform layer: Karpenter, load balancer controller, External Secrets, Gateway API, storage class
+#       - name: Platform - init
+#         run: bash scripts/tf_run.sh layer2-init -chdir=terraform/us-east-1-platform init -input=false -no-color
+
+#       - name: Platform - plan
+#         run: bash scripts/tf_run.sh layer2-plan -chdir=terraform/us-east-1-platform plan -input=false -no-color -lock-timeout=10m -out=tfplan
+
+#       - name: Platform - plan guard
+#         run: |
+#           terraform -chdir=terraform/us-east-1-platform show -json tfplan > "$RUNNER_TEMP/layer2-plan.json"
+#           bash scripts/capture.sh layer2-plan-guard python3 scripts/plan_guard.py "$RUNNER_TEMP/layer2-plan.json" --allow .github/plan-guard-allow.txt
+
+#       - name: Platform - apply
+#         run: bash scripts/tf_run.sh layer2-apply -chdir=terraform/us-east-1-platform apply -input=false -no-color -lock-timeout=10m tfplan
+
+#       # ---- Argo CD, then every sync wave in order; this step returns only when the required apps are Healthy and Synced
+#       - name: GitOps - Argo CD and the sync waves
+#         env:
+#           REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+#           ARGOCD_INSTALL_SHA256: ${{ vars.ARGOCD_INSTALL_SHA256 }}
+#         run: bash scripts/capture.sh bootstrap-gitops bash scripts/bootstrap-gitops.sh
+
+#       # ---- database
+#       - name: Database - migrations
+#         env:
+#           DB_HOST: ${{ needs.layer1.outputs.db_address }}
+#           DB_MASTER_SECRET_ARN: ${{ needs.layer1.outputs.db_master_secret_arn }}
+#           DB_APP_SECRET_ARN: ${{ needs.layer1.outputs.db_app_secret_arn }}
+#         run: |
+#           port="$(aws ssm get-parameter --name /kafka-eks/db/port --query Parameter.Value --output text)"
+#           name="$(aws ssm get-parameter --name /kafka-eks/db/name --query Parameter.Value --output text)"
+#           bash scripts/capture.sh db-migrate python3 scripts/db_migrate.py \
+#             --host "$DB_HOST" --port "$port" --dbname "$name" \
+#             --master-secret-arn "$DB_MASTER_SECRET_ARN" --app-secret-id "$DB_APP_SECRET_ARN"
+
+#       # ---- ETL code
+#       - name: ETL - release and roll the Auto Scaling Groups
+#         env:
+#           BUCKET: ${{ needs.layer1.outputs.scripts_bucket }}
+#           RELEASE: ${{ github.sha }}
+#           ASG_JSON: ${{ needs.layer1.outputs.etl_asgs }}
+#           MIN_HEALTHY_JSON: ${{ needs.layer1.outputs.etl_min_healthy }}
+#         run: bash scripts/capture.sh release-clients bash scripts/release_clients.sh
+
+#       - name: ETL - verify (services running, lag metric flowing)
+#         env:
+#           ASG_JSON: ${{ needs.layer1.outputs.etl_asgs }}
+#         run: bash scripts/capture.sh verify bash scripts/verify.sh
+
+#       - name: Upload logs (only when something failed)
+#         if: failure()
+#         uses: actions/upload-artifact@v6
+#         with:
+#           name: failure-logs-cd-deploy
+#           path: |
+#             tf-artifacts/
+#             terraform/**/crash.log
+#             terraform/**/errored.tfstate # the only copy of the new state if Terraform could not save it to S3; can contain secrets
+#           retention-days: 3
+#           if-no-files-found: ignore
+
+#   finish:
+#     name: turn off the EC2 bootstrap runner once ARC works
+#     needs: [layer1, deploy]
+#     runs-on: ubuntu-24.04
+#     timeout-minutes: 15
+#     permissions:
+#       contents: read
+#       id-token: write
+#     steps:
+#       - uses: actions/checkout@v6
+#       - name: Sign in to AWS (OIDC, deploy role)
+#         uses: aws-actions/configure-aws-credentials@v6
+#         with:
+#           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/kafka-eks-gh-cd
+#           aws-region: ${{ env.AWS_REGION }}
+#           role-session-name: gh-cd-${{ github.run_id }}
+#       - name: Scale the bootstrap runner down (only if ARC is ready)
+#         env:
+#           RUNNER_ASG: ${{ needs.layer1.outputs.runner_asg }}
+#         run: bash scripts/pick_runner.sh finish
