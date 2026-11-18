@@ -1,0 +1,28 @@
+# Wave 4: the namespace the runners live in, and the ExternalSecret that copies the GitHub token from
+# AWS Secrets Manager (/github/runner-auth) into it. Must be Healthy before the runner set (wave 5) starts.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/King-Juliet/kafka-eks.git
+    targetRevision: main
+    path: gitops/arc/config
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 20
+      backoff: { duration: 30s, factor: 2, maxDuration: 15m }
