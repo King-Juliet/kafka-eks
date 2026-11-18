@@ -5,6 +5,8 @@ kind: AppProject
 metadata:
   name: kafka
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2" # the project must exist before the first app (wave -1) that uses it
 spec:
   description: Strimzi operator, Kafka cluster and its secrets
   sourceRepos:
