@@ -1,0 +1,21 @@
+extends: default
+ignore: |
+  terraform/karpenter/chart/templates/
+rules:
+  new-lines: disable # the repo's files were written on Windows (CRLF)
+  new-line-at-end-of-file: disable
+  trailing-spaces: disable
+  line-length: disable
+  document-start: disable
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable
+  truthy:
+    check-keys: false # GitHub Actions uses `on:`
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1
+  indentation:
+    spaces: consistent
+    indent-sequences: consistent

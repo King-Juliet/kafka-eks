@@ -22,6 +22,13 @@ provider "kubernetes" {
 
 # Helm provider 3.x takes the connection as an attribute (kubernetes = { ... }), not a nested block.
 provider "helm" {
+  # Charts are pulled from your own ECR (the pull-through cache from layer 1), which needs a login.
+  registries = [{
+    url      = "oci://${local.l1.ecr_registry_host}"
+    username = data.aws_ecr_authorization_token.this.user_name
+    password = data.aws_ecr_authorization_token.this.password
+  }]
+
   kubernetes = {
     host                   = local.l1.cluster_endpoint
     cluster_ca_certificate = base64decode(local.l1.cluster_certificate_authority_data)

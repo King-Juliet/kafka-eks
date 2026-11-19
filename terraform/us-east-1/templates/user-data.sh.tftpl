@@ -1,0 +1,133 @@
+#!/bin/bash
+# ETL instance bootstrap (Amazon Linux 2023). Role: ${group_key}.
+# 1. wait for the current release pointer in Secrets Manager, 2. copy that release from S3, 3. install its Python
+# packages from the bundled wheelhouse (no internet needed for pip), 4. start the systemd units.
+# Secrets are NOT handled here: render-env.sh fetches them every time a unit starts.
+set -euo pipefail
+exec > >(tee /var/log/bitcoin-etl-bootstrap.log) 2>&1
+
+REGION="${region}"
+BUCKET="${bucket}"
+RELEASE_SECRET="${release_secret_id}"
+
+# ASSUMPTION: these package names exist in AL2023's repositories. Not verified from here; if one is missing
+# this stops right here and the log above says which.
+dnf install -y python3.11 python3.11-pip jq amazon-cloudwatch-agent
+
+id etl >/dev/null 2>&1 || useradd --system --home-dir /opt/bitcoin-etl --shell /sbin/nologin etl
+install -d -o etl -g etl -m 0755 /opt/bitcoin-etl /var/log/bitcoin-etl
+install -d -m 0755 /etc/bitcoin-etl
+
+cat > /etc/bitcoin-etl/config <<CONFIG
+REGION=$REGION
+BOOTSTRAP_SECRET_ID=${bootstrap_secret_id}
+DB_ENDPOINT_SECRET_ID=${db_endpoint_secret_id}
+DB_SECRET_ID=${db_secret_id}
+CA_SECRET_ID=${ca_secret_id}
+CONFIG
+
+cat > /usr/local/bin/render-env.sh <<'RENDER'
+${render_env_script}
+RENDER
+chmod 0755 /usr/local/bin/render-env.sh
+
+# --- 1. which release? (CD publishes it right after uploading; a brand-new account can be a few minutes early)
+RELEASE=""
+for _ in $(seq 1 90); do
+  RELEASE="$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$RELEASE_SECRET" --query SecretString --output text 2>/dev/null || true)"
+  [ -n "$RELEASE" ] && [ "$RELEASE" != "None" ] && break
+  echo "no release published yet ($RELEASE_SECRET); waiting"
+  sleep 20
+done
+[ -n "$RELEASE" ] && [ "$RELEASE" != "None" ] || { echo "no release found after 30 minutes" >&2; exit 1; }
+echo "using release $RELEASE"
+
+# --- 2. copy it
+DEST="/opt/bitcoin-etl/releases/$RELEASE"
+install -d -o etl -g etl "$DEST"
+aws s3 sync --region "$REGION" --no-progress "s3://$BUCKET/releases/$RELEASE/" "$DEST/"
+ln -sfn "$DEST" /opt/bitcoin-etl/current
+
+# --- 3. Python environment from the wheelhouse only
+python3.11 -m venv /opt/bitcoin-etl/venv
+/opt/bitcoin-etl/venv/bin/pip install --no-index --find-links "$DEST/wheelhouse" -r "$DEST/requirements.txt"
+chown -R etl:etl /opt/bitcoin-etl
+
+# --- 4. units
+cat > /etc/systemd/system/bitcoin-etl.service <<'UNIT'
+[Unit]
+Description=bitcoin-etl (${group_key}): ${script}
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=etl
+Group=etl
+WorkingDirectory=/var/log/bitcoin-etl
+ExecStartPre=+/usr/local/bin/render-env.sh ${kafka_user} /etc/bitcoin-etl/env yes
+EnvironmentFile=-/etc/bitcoin-etl/env
+ExecStart=/opt/bitcoin-etl/venv/bin/python /opt/bitcoin-etl/current/launcher.py ${script}
+# The scripts finish cleanly on Ctrl-C (KeyboardInterrupt: flush / close), so stop them with SIGINT.
+KillSignal=SIGINT
+TimeoutStopSec=90
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+%{ if run_lag_publisher ~}
+cat > /etc/systemd/system/bitcoin-lag-publisher.service <<'UNIT'
+[Unit]
+Description=Consumer-group lag -> CloudWatch
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=etl
+Group=etl
+WorkingDirectory=/var/log/bitcoin-etl
+ExecStartPre=+/usr/local/bin/render-env.sh ${lag_user} /etc/bitcoin-etl/lag.env no
+EnvironmentFile=-/etc/bitcoin-etl/lag.env
+ExecStart=/opt/bitcoin-etl/venv/bin/python /opt/bitcoin-etl/current/launcher.py ops/lag_publisher.py
+KillSignal=SIGINT
+TimeoutStopSec=30
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+%{ endif ~}
+
+# --- 5. ship the ETL log file to CloudWatch Logs
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'AGENT'
+{
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/bitcoin-etl/etl_bitcoin.log",
+            "log_group_name": "${log_group}",
+            "log_stream_name": "{instance_id}"
+          }
+        ]
+      }
+    }
+  }
+}
+AGENT
+systemctl enable --now amazon-cloudwatch-agent || true
+
+systemctl daemon-reload
+systemctl enable --now bitcoin-etl.service
+%{ if run_lag_publisher ~}
+systemctl enable --now bitcoin-lag-publisher.service
+%{ endif ~}
+echo "bootstrap complete"

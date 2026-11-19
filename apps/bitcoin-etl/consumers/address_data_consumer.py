@@ -1,0 +1,100 @@
+import json
+import os
+import sys
+import time
+import traceback
+from datetime import datetime
+
+from confluent_kafka import Consumer
+
+# Adjust sys.path before importing local modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+from bitcoin_etl_helpers import logger
+from bitcoin_etl_main import transform_n_load_address_data
+
+# Kafka config
+TRANSACTION_TOPIC = "bitcoin_transaction_data"
+BOOTSTRAP_SERVERS = os.environ["KAFKA_BOOTSTRAP_SERVERS"]  # read from Secrets Manager by render-env.sh before the service starts
+
+conf = {
+    "bootstrap.servers": BOOTSTRAP_SERVERS,
+    "group.id": "bitcoin_address_consumer_group",
+    "group.protocol": "classic",
+    "enable.auto.commit": "false",
+    "auto.offset.reset": "earliest",
+    "fetch.min.bytes": 8192,  # wait until at least 8kilobytes of data are available across all partitions assigned to the consumer before sending a response
+    "fetch.max.bytes": 1048576,  # maximum bytes to fetch in one request, 1MB
+    "heartbeat.interval.ms": 3000,
+    "session.timeout.ms": 45000,
+    "max.poll.interval.ms": 300000,
+    "request.timeout.ms": 30000,
+    "allow.auto.create.topics": "false",
+}
+
+
+# Create Kafka consumer
+def consume_address_data():
+    """Consume transaction/address data from Kafka and process it.
+
+    Subscribes to the configured Kafka transaction topic and continuously
+    polls for messages. Each message is decoded, parsed into JSON, and passed
+    to the address transformation and loading pipeline. Offsets are committed
+    only after successful processing to ensure reliable message consumption.
+
+    Handles Kafka errors, processing failures, and allows for graceful shutdown
+    on user interruption (KeyboardInterrupt).
+    """
+    consumer = Consumer(conf)
+    consumer.subscribe([TRANSACTION_TOPIC])
+    logger.info(f"Subscribed to Kafka topic: {TRANSACTION_TOPIC}")
+
+    try:
+        while True:
+            msg = consumer.poll(1.0)
+            if msg is None:
+                logger.info("Waiting for new block data...")
+                time.sleep(1)
+                continue
+            if msg.error():
+                logger.error(f"Kafka error: {msg.error()}")
+                continue
+
+            try:
+                timestamp_type, timestamp_value = msg.timestamp()
+                timestamp_str = (
+                    datetime.fromtimestamp(timestamp_value / 1000.0).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    if timestamp_value
+                    else "N/A"
+                )
+
+                value = msg.value().decode("utf-8")
+                logger.info(
+                    f"Consumed block from topic: {msg.topic()} | timestamp: {timestamp_str}"
+                )
+
+                txn_data = json.loads(value)
+                transform_n_load_address_data(detailed_txs=txn_data)
+
+                # Commit offset only after successful processing
+                consumer.commit(asynchronous=False)
+                logger.info(
+                    f"Offset committed for partition {msg.partition()} at offset {msg.offset()}"
+                )
+
+            except Exception:
+                logger.error("Error while processing block message")
+                logger.error(traceback.format_exc())
+
+    except KeyboardInterrupt:
+        logger.info("Consumer interrupted by user.")
+    finally:
+        consumer.close()
+        logger.info("Kafka consumer closed.")
+
+
+if __name__ == "__main__":
+    consume_address_data()

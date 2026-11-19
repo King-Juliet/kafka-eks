@@ -1,0 +1,45 @@
+{{- if .Values.argocdOciRepos }}
+{{- /*
+  Argo CD pulls the Strimzi and ARC charts from your ECR (the pull-through cache). ECR logins last 12 hours, so a fixed
+  password in a Secret would stop working half a day after install. Instead: External Secrets asks ECR for a fresh
+  login every 6 hours and rewrites one Argo CD "repository" Secret per registry.
+*/ -}}
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: ECRAuthorizationToken
+metadata:
+  name: ecr-login
+  namespace: {{ .Values.argocdNamespace }}
+spec:
+  region: {{ required "region is required" .Values.region | quote }}
+  # No auth block on purpose: it uses the External Secrets role (EKS Pod Identity), like the ClusterSecretStore.
+{{- range $name, $url := .Values.argocdOciRepos }}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: argocd-oci-{{ $name }}
+  namespace: {{ $.Values.argocdNamespace }}
+spec:
+  refreshInterval: 6h
+  target:
+    name: argocd-oci-{{ $name }}
+    creationPolicy: Owner
+    template:
+      metadata:
+        labels:
+          argocd.argoproj.io/secret-type: repository
+      data:
+        type: helm
+        name: {{ $name | quote }}
+        url: {{ $url | quote }}
+        enableOCI: "true"
+        username: "{{`{{ .username }}`}}"
+        password: "{{`{{ .password }}`}}"
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: ECRAuthorizationToken
+          name: ecr-login
+{{- end }}
+{{- end }}

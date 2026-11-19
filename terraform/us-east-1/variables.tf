@@ -107,14 +107,18 @@ variable "github_repo" {
   default     = "King-Juliet/kafka-eks"
 }
 
-variable "ci_name_prefix" {
-  description = "Prefix of the GitHub OIDC roles created by ../bootstrap (<prefix>-gh-ci, <prefix>-gh-cd). The deploy role becomes cluster-admin, so this must match what bootstrap created."
+variable "deploy_role_arn" {
+  description = "ARN of the GitHub OIDC role you created in the console. It becomes cluster-admin (it runs the platform layer). The workflows pass it in from the repository variable AWS_ROLE_ARN (TF_VAR_deploy_role_arn). Must be a plain role ARN with no path."
   type        = string
-  default     = "kafka-eks"
+
+  validation {
+    condition     = can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/[^/]+$", var.deploy_role_arn))
+    error_message = "deploy_role_arn must look like arn:aws:iam::123456789012:role/NAME (no path)."
+  }
 }
 
 variable "runner_auth_secret_name" {
-  description = "Secrets Manager secret (created by ../bootstrap) holding the GitHub token the runners register with."
+  description = "Secrets Manager secret holding the GitHub token the runners register with. You create it once by hand (README step 2)."
   type        = string
   default     = "/github/runner-auth"
 }
@@ -156,69 +160,21 @@ variable "db_app_secret_name" {
 }
 
 # ---------------------------------------------------------------- producer / consumer ASGs
+# Their sizes and instance types are the locals at the top of kafka-producer.tf and kafka-consumer-*.tf.
 variable "alarm_topic_arn" {
   description = "Optional SNS topic that receives the ETL alarms (lag metric missing, producer down). null = alarms exist but notify nobody."
   type        = string
   default     = null
 }
 
-variable "etl_groups" {
-  description = <<-EOT
-    The Auto Scaling Groups. The producer is exactly one instance. The block and address consumers scale on their
-    consumer group's lag. The transaction consumer is pinned to one instance: it pairs block and transaction messages
-    in memory, so splitting its partitions across instances would break the pairing.
-    ASSUMPTION: instance types are guesses (not load-tested); lag thresholds live in the kafka-clients module.
-  EOT
-  type = map(object({
-    kafka_user                     = string
-    script                         = string
-    instance_type                  = string
-    min_size                       = number
-    max_size                       = number
-    desired_size                   = number
-    lag_group_id                   = optional(string)
-    run_lag_publisher              = optional(bool, false)
-    refresh_min_healthy_percentage = optional(number, 50)
-  }))
-  default = {
-    producer = {
-      kafka_user                     = "producer-app"
-      script                         = "producer/block_data_producer.py"
-      instance_type                  = "t3.small"
-      min_size                       = 1
-      max_size                       = 1
-      desired_size                   = 1
-      run_lag_publisher              = true
-      refresh_min_healthy_percentage = 0
-    }
-    consumer-block = {
-      kafka_user    = "consumer-app"
-      script        = "consumers/block_data_consumer.py"
-      instance_type = "t3.medium"
-      min_size      = 1
-      max_size      = 5
-      desired_size  = 1
-      lag_group_id  = "bitcoin_block_consumer_group"
-    }
-    consumer-address = {
-      kafka_user    = "consumer-app"
-      script        = "consumers/address_data_consumer.py"
-      instance_type = "t3.medium"
-      min_size      = 1
-      max_size      = 5
-      desired_size  = 1
-      lag_group_id  = "bitcoin_address_consumer_group"
-    }
-    consumer-transaction = {
-      kafka_user    = "consumer-app"
-      script        = "consumers/transaction_data_consumer.py"
-      instance_type = "t3.medium"
-      min_size      = 1
-      max_size      = 1
-      desired_size  = 1
-      lag_group_id  = "bitcoin_consumer_group"
-      # One instance and it must not run twice at once (in-memory pairing): replace it by stopping, then starting.
-      refresh_min_healthy_percentage = 0
-    }
+
+variable "ghcr_pull_secret_name" {
+  description = "Secrets Manager secret holding the GitHub login ECR uses to pull ghcr.io images and charts through the cache. You create it once by hand (README step 3). ECR only accepts a name that starts with ecr-pullthroughcache/."
+  type        = string
+  default     = "ecr-pullthroughcache/ghcr"
+
+  validation {
+    condition     = startswith(var.ghcr_pull_secret_name, "ecr-pullthroughcache/")
+    error_message = "ECR only accepts a credential secret whose name starts with ecr-pullthroughcache/."
   }
 }

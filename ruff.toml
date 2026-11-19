@@ -1,0 +1,11 @@
+# Lint for the code written for this pipeline. The tested ETL scripts (producer/, consumers/, topics/, bitcoin_etl_*.py)
+# are deliberately not checked here: they are used exactly as they were tested.
+line-length = 140
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "B", "UP", "I"]
+ignore = [
+  "E501", # long lines
+  "W292", # no newline at end of file: pasting a file from chat drops it, and it is only style
+]

@@ -8,3 +8,7 @@ data "terraform_remote_state" "layer1" {
     region = var.region
   }
 }
+
+# A login for your private registry (valid 12 hours, far longer than one apply). The Helm provider uses it to pull the
+# Karpenter charts through the ECR cache (providers.tf).
+data "aws_ecr_authorization_token" "this" {}

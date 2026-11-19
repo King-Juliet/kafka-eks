@@ -2,6 +2,8 @@
 # Installed through Argo CD on purpose and NOT through Terraform: the pipeline's own deploy jobs run on these
 # runners, and a runner must never be the thing that rewrites the runner software it is running on.
 # Chart 0.15.1 was marked "Latest" on the releases page on 2026-11-18 (the page does not show the year).
+# The chart and the controller image come from YOUR ECR (a pull-through cache of ghcr.io), not from ghcr.io directly.
+# ACCOUNT_ID is your 12-digit AWS account id; `bash scripts/account_id.sh set <id>` replaces it everywhere (README step 4).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -12,12 +14,14 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    repoURL: 992382810653.dkr.ecr.us-east-1.amazonaws.com/ghcr/actions/actions-runner-controller-charts
     chart: gha-runner-scale-set-controller
     targetRevision: 0.15.1
     helm:
       releaseName: arc
       valuesObject:
+        image:
+          repository: 992382810653.dkr.ecr.us-east-1.amazonaws.com/ghcr/actions/gha-runner-scale-set-controller
         # The runner set chart refers to the controller's service account by name: <releaseName>-gha-rs-controller.
         nodeSelector:
           workload: system

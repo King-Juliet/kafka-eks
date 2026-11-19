@@ -1,254 +1,236 @@
-# # CI: tests, Terraform checks, security checks. Changes nothing in AWS.
-# # Runs on every pull request, and cd.yml calls it on every push to main (deploy only starts if this passes).
-# # Everything runs on GitHub-hosted runners; the one AWS call is a `terraform plan` of layer 1 (it changes nothing).
-# #
-# # Versions: TF_VERSION and PYTHON_VERSION below are the same in ci.yml, cd.yml and drift.yml
-# # (tests/test_workflows.py fails if they drift apart).
-# name: ci
+# CI: Terraform checks, security checks, code checks. Changes nothing in AWS.
+# Runs on every push to main and on every pull request.
+# When a push to main passes here (every job green), cd.yaml starts by itself. cd.yaml finds this workflow by its name ("ci"),
+# so do not rename it without changing cd.yaml too.
+# Everything runs on GitHub-hosted runners; the one AWS call is a `terraform plan` of layer 1 (it changes nothing).
+#
+# Versions: TF_VERSION and PYTHON_VERSION below are the same in ci.yaml, cd.yaml and drift.yaml
+# (change them in all three together).
+name: ci
 
-# on:
-#   pull_request:
-#   workflow_call:
+on:
+  push:
+    branches: [main]
+  pull_request:
 
-# permissions:
-#   contents: read
+permissions:
+  contents: read
 
-# concurrency:
-#   group: ci-${{ github.event_name }}-${{ github.ref }}
-#   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# A newer push to a pull request cancels the older run. A run on main is never cancelled half way.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# env:
-#   AWS_REGION: us-east-1
-#   TF_VERSION: "1.15.8"
-#   PYTHON_VERSION: "3.12"
-#   TF_IN_AUTOMATION: "1"
-#   TF_INPUT: "0"
-#   TF_VAR_deploy_role_arn: ${{ vars.AWS_ROLE_ARN }} # layer 1 makes this role a cluster admin
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: "1.15.8"
+  PYTHON_VERSION: "3.12"
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+  TF_VAR_deploy_role_arn: ${{ vars.AWS_ROLE_ARN }} # layer 1 makes this role a cluster admin
 
-# jobs:
-#   terraform:
-#     name: terraform (${{ matrix.name }})
-#     runs-on: ubuntu-24.04
-#     timeout-minutes: 20
-#     strategy:
-#       fail-fast: false
-#       matrix:
-#         include:
-#           - { name: layer1, root: terraform/us-east-1 }
-#           - { name: layer2, root: terraform/us-east-1-platform }
-#     steps:
-#       - uses: actions/checkout@v6
+jobs:
+  terraform:
+    name: terraform (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: layer1, root: terraform/us-east-1 }
+          - { name: layer2, root: terraform/us-east-1-platform }
+    steps:
+      - uses: actions/checkout@v6
 
-#       - uses: hashicorp/setup-terraform@v4
-#         with:
-#           terraform_version: ${{ env.TF_VERSION }}
-#           terraform_wrapper: false # the wrapper rewrites stdout, which breaks `terraform output -json` and `show -json`
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false # the wrapper rewrites stdout, which breaks `terraform output -json` and `show -json`
 
-#       - name: Format
-#         if: matrix.name == 'layer1' # one run is enough: it covers every folder
-#         run: bash scripts/tf_run.sh fmt fmt -check -recursive -diff -no-color terraform
+      - name: Format
+        if: matrix.name == 'layer1' # one run is enough: it covers every folder
+        run: bash scripts/tf_run.sh fmt fmt -check -recursive -diff -no-color terraform
 
-#       - name: Init (no backend, no AWS)
-#         run: bash scripts/tf_run.sh init-${{ matrix.name }} -chdir=${{ matrix.root }} init -backend=false -input=false -no-color
+      - name: Init (no backend, no AWS)
+        run: bash scripts/tf_run.sh init-${{ matrix.name }} -chdir=${{ matrix.root }} init -backend=false -input=false -no-color
 
-#       - name: Validate
-#         run: bash scripts/tf_run.sh validate-${{ matrix.name }} -chdir=${{ matrix.root }} validate -no-color
+      - name: Validate
+        run: bash scripts/tf_run.sh validate-${{ matrix.name }} -chdir=${{ matrix.root }} validate -no-color
 
-#       - uses: terraform-linters/setup-tflint@v6
-#         with:
-#           tflint_version: v0.59.1
+      - uses: terraform-linters/setup-tflint@v6
+        with:
+          tflint_version: v0.59.1
 
-#       - name: TFLint
-#         run: bash scripts/capture.sh tflint-${{ matrix.name }} tflint --chdir=${{ matrix.root }} --config="$GITHUB_WORKSPACE/.tflint.hcl" --format=compact
+      - name: TFLint
+        run: bash scripts/capture.sh tflint-${{ matrix.name }} tflint --chdir=${{ matrix.root }} --config="$GITHUB_WORKSPACE/.tflint.hcl" --format=compact
 
-#       - name: Upload logs (only when something failed)
-#         if: failure()
-#         uses: actions/upload-artifact@v6
-#         with:
-#           name: failure-logs-ci-terraform-${{ matrix.name }}
-#           path: |
-#             tf-artifacts/
-#             terraform/**/crash.log
-#           retention-days: 3
-#           if-no-files-found: ignore
+      - name: Upload logs (only when something failed)
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: failure-logs-ci-terraform-${{ matrix.name }}
+          path: |
+            tf-artifacts/
+            terraform/**/crash.log
+          retention-days: 3
+          if-no-files-found: ignore
 
-#   security:
-#     runs-on: ubuntu-24.04
-#     timeout-minutes: 20
-#     steps:
-#       - uses: actions/checkout@v6
-#         with:
-#           fetch-depth: 0 # gitleaks reads history
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # gitleaks reads history
 
-#       - uses: actions/setup-python@v6
-#         with:
-#           python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
-#       - name: Install checkov
-#         run: python -m pip install --quiet --disable-pip-version-check checkov==3.4.5 # same pin as requirements-dev.txt (a test checks)
+      - name: Install checkov
+        run: python -m pip install --quiet --disable-pip-version-check checkov==3.4.5 # same pin as requirements-dev.txt
 
-#       - name: Checkov (Terraform, Kubernetes manifests, GitHub workflows)
-#         run: bash scripts/capture.sh checkov checkov --config-file .checkov.yaml
+      - name: Checkov (Terraform, Kubernetes manifests, GitHub workflows)
+        run: bash scripts/capture.sh checkov checkov --config-file .checkov.yaml
 
-#       - name: Secret scan
-#         uses: gitleaks/gitleaks-action@v2 # free for repositories owned by a personal account; organisations need a licence key
-#         env:
-#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2 # free for repositories owned by a personal account; organisations need a licence key
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-#       - name: Upload logs (only when something failed)
-#         if: failure()
-#         uses: actions/upload-artifact@v6
-#         with:
-#           name: failure-logs-ci-security
-#           path: tf-artifacts/
-#           retention-days: 3
-#           if-no-files-found: ignore
+      - name: Upload logs (only when something failed)
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: failure-logs-ci-security
+          path: tf-artifacts/
+          retention-days: 3
+          if-no-files-found: ignore
 
-#   code:
-#     name: code (python, shell, yaml, helm, workflows)
-#     runs-on: ubuntu-24.04
-#     timeout-minutes: 30
-#     # A throw-away PostgreSQL for the database-migration test. It lives only for this job (no AWS, no cost) and uses
-#     # the same major version as RDS (db_engine_version in terraform/us-east-1/variables.tf).
-#     services:
-#       postgres:
-#         image: postgres:16
-#         env:
-#           POSTGRES_USER: etl_admin
-#           POSTGRES_PASSWORD: ci-throwaway
-#         ports:
-#           - 5432:5432
-#         options: >-
-#           --health-cmd "pg_isready -U etl_admin"
-#           --health-interval 5s
-#           --health-timeout 5s
-#           --health-retries 12
-#     steps:
-#       - uses: actions/checkout@v6
+  code:
+    name: code (python, shell, yaml, helm, workflows)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
 
-#       - uses: actions/setup-python@v6
-#         with:
-#           python-version: ${{ env.PYTHON_VERSION }}
-#           cache: pip
-#           cache-dependency-path: |
-#             requirements-dev.txt
-#             apps/bitcoin-etl/requirements.txt
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            apps/bitcoin-etl/requirements.txt
 
-#       - name: Install the dev tools
-#         run: python -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt
+      - name: Install the dev tools
+        run: python -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt
 
-#       - name: Python syntax
-#         run: python -m compileall -q apps scripts tests
+      - name: Python syntax
+        run: python -m compileall -q apps scripts
 
-#       - name: ruff
-#         run: bash scripts/capture.sh ruff ruff check scripts tests apps/bitcoin-etl/launcher.py apps/bitcoin-etl/ops
+      - name: ruff
+        run: bash scripts/capture.sh ruff ruff check scripts apps/bitcoin-etl/launcher.py apps/bitcoin-etl/ops
 
-#       - name: bandit (security linter for Python)
-#         run: bash scripts/capture.sh bandit bandit -q -c .bandit.yaml -r scripts apps/bitcoin-etl --exclude apps/bitcoin-etl/__pycache__
+      - name: bandit (security linter for Python)
+        run: bash scripts/capture.sh bandit bandit -q -c .bandit.yaml -r scripts apps/bitcoin-etl --exclude apps/bitcoin-etl/__pycache__
 
-#       - name: pip-audit (known vulnerabilities in the dependencies)
-#         run: bash scripts/capture.sh pip-audit pip-audit -r apps/bitcoin-etl/requirements.txt -r requirements-deploy.txt
+      - name: pip-audit (known vulnerabilities in the dependencies)
+        run: bash scripts/capture.sh pip-audit pip-audit -r apps/bitcoin-etl/requirements.txt -r requirements-deploy.txt
 
-#       - name: Tests
-#         env:
-#           REQUIRE_PG: "1" # a missing database must fail, not silently skip
-#           TEST_PG_HOST: 127.0.0.1
-#           TEST_PG_PORT: "5432"
-#           TEST_PG_USER: etl_admin
-#           TEST_PG_PASSWORD: ci-throwaway
-#         run: bash scripts/capture.sh pytest pytest -q
+      - name: shellcheck
+        run: shellcheck scripts/*.sh terraform/us-east-1/templates/render-env.sh
 
-#       - name: Terraform references (variables, outputs, module inputs)
-#         run: bash scripts/capture.sh tf-refcheck python scripts/tf_refcheck.py terraform
+      - name: Workflows (actionlint)
+        # kafka-eks-arc is the label of our own ARC runners; actionlint cannot know it.
+        run: actionlint -ignore 'label "kafka-eks-arc" is unknown'
 
-#       - name: shellcheck
-#         run: shellcheck scripts/*.sh terraform/kafka-clients/render-env.sh
+      - name: YAML
+        run: yamllint -c .yamllint.yml .github gitops terraform/karpenter/chart/values.yaml terraform/karpenter/chart/Chart.yaml
 
-#       - name: Workflows (actionlint)
-#         # kafka-eks-arc is the label of our own ARC runners; actionlint cannot know it.
-#         run: actionlint -ignore 'label "kafka-eks-arc" is unknown'
+      - name: Helm charts (Karpenter node pools, External Secrets config)
+        run: |
+          helm lint terraform/karpenter/chart --set clusterName=ci --set nodeRoleName=ci
+          helm template ci terraform/karpenter/chart --set clusterName=ci --set nodeRoleName=ci > /dev/null
+          # --set argocdOciRepos.strimzi=... switches on the Argo CD registry-login template, so it gets rendered too
+          eso=(--set region=us-east-1 --set argocdOciRepos.strimzi=111122223333.dkr.ecr.us-east-1.amazonaws.com/quay/strimzi-helm)
+          helm lint terraform/external-secrets/chart "${eso[@]}"
+          helm template ci terraform/external-secrets/chart "${eso[@]}" > /dev/null
 
-#       - name: YAML
-#         run: yamllint -c .yamllint.yml .github gitops terraform/karpenter/chart/values.yaml terraform/karpenter/chart/Chart.yaml
+      - name: Upload logs (only when something failed)
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: failure-logs-ci-code
+          path: tf-artifacts/
+          retention-days: 3
+          if-no-files-found: ignore
 
-#       - name: Helm chart
-#         run: |
-#           helm lint terraform/karpenter/chart --set clusterName=ci --set nodeRoleName=ci
-#           helm template ci terraform/karpenter/chart --set clusterName=ci --set nodeRoleName=ci > /dev/null
+  plan:
+    name: plan (layer 1)
+    # The AWS role trusts the main branch only, so pull requests skip this job (it runs on every push to main).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
 
-#       - name: Upload logs (only when something failed)
-#         if: failure()
-#         uses: actions/upload-artifact@v6
-#         with:
-#           name: failure-logs-ci-code
-#           path: tf-artifacts/
-#           retention-days: 3
-#           if-no-files-found: ignore
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
-#   plan:
-#     name: plan (layer 1)
-#     # The AWS role trusts the main branch only, so pull requests skip this job (it runs from cd.yml on every push to main).
-#     if: github.event_name != 'pull_request'
-#     runs-on: ubuntu-24.04
-#     timeout-minutes: 30
-#     permissions:
-#       contents: read
-#       id-token: write
-#     steps:
-#       - uses: actions/checkout@v6
+      - name: Stop early if AWS_ROLE_ARN is not set
+        if: vars.AWS_ROLE_ARN == ''
+        run: |
+          echo "::error::Set the repository variable AWS_ROLE_ARN to the ARN of your GitHub OIDC role (Settings > Secrets and variables > Actions > Variables)."
+          exit 1
 
-#       - uses: hashicorp/setup-terraform@v4
-#         with:
-#           terraform_version: ${{ env.TF_VERSION }}
-#           terraform_wrapper: false
+      - name: Sign in to AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gh-${{ github.run_id }}
 
-#       - name: Stop early if AWS_ROLE_ARN is not set
-#         if: vars.AWS_ROLE_ARN == ''
-#         run: |
-#           echo "::error::Set the repository variable AWS_ROLE_ARN to the ARN of your GitHub OIDC role (Settings > Secrets and variables > Actions > Variables)."
-#           exit 1
+      - name: Init
+        run: bash scripts/tf_run.sh plan-init -chdir=terraform/us-east-1 init -input=false -no-color
 
-#       - name: Sign in to AWS (OIDC)
-#         uses: aws-actions/configure-aws-credentials@v6
-#         with:
-#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-#           aws-region: ${{ env.AWS_REGION }}
-#           role-session-name: gh-${{ github.run_id }}
+      - name: Plan (no state lock, the plan is thrown away)
+        run: bash scripts/tf_run.sh plan -chdir=terraform/us-east-1 plan -input=false -no-color -lock=false -out=tfplan
 
-#       - name: Init
-#         run: bash scripts/tf_run.sh plan-init -chdir=terraform/us-east-1 init -input=false -no-color
+      - name: Plan guard - no destroy or replace of anything holding data or identity
+        run: |
+          terraform -chdir=terraform/us-east-1 show -json tfplan > "$RUNNER_TEMP/plan.json"
+          bash scripts/capture.sh plan-guard python3 scripts/plan_guard.py "$RUNNER_TEMP/plan.json" --allow .github/plan-guard-allow.txt
 
-#       - name: Plan (no state lock, the plan is thrown away)
-#         run: bash scripts/tf_run.sh plan -chdir=terraform/us-east-1 plan -input=false -no-color -lock=false -out=tfplan
+      - name: Upload logs (only when something failed)
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: failure-logs-ci-plan
+          path: |
+            tf-artifacts/
+            terraform/**/crash.log
+          retention-days: 3
+          if-no-files-found: ignore
 
-#       - name: Plan guard - no destroy or replace of anything holding data or identity
-#         run: |
-#           terraform -chdir=terraform/us-east-1 show -json tfplan > "$RUNNER_TEMP/plan.json"
-#           bash scripts/capture.sh plan-guard python3 scripts/plan_guard.py "$RUNNER_TEMP/plan.json" --allow .github/plan-guard-allow.txt
-
-#       - name: Upload logs (only when something failed)
-#         if: failure()
-#         uses: actions/upload-artifact@v6
-#         with:
-#           name: failure-logs-ci-plan
-#           path: |
-#             tf-artifacts/
-#             terraform/**/crash.log
-#           retention-days: 3
-#           if-no-files-found: ignore
-
-#   # One required check for branch protection and for cd.yml: green only if everything above passed or was skipped.
-#   ci-ok:
-#     if: always()
-#     needs: [terraform, security, code, plan]
-#     runs-on: ubuntu-24.04
-#     steps:
-#       - name: Everything passed
-#         env:
-#           RESULTS: ${{ toJSON(needs.*.result) }}
-#         run: |
-#           echo "$RESULTS"
-#           if echo "$RESULTS" | grep -Eq 'failure|cancelled'; then
-#             echo "::error::a CI job failed or was cancelled"
-#             exit 1
-#           fi
+  # One required check for branch protection: green only if everything above passed or was skipped.
+  # cd.yaml starts only when this whole workflow finishes green, so a red job anywhere here stops the deploy.
+  ci-ok:
+    if: always()
+    needs: [terraform, security, code, plan]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Everything passed
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          if echo "$RESULTS" | grep -Eq 'failure|cancelled'; then
+            echo "::error::a CI job failed or was cancelled"
+            exit 1
+          fi

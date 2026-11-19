@@ -1,0 +1,2 @@
+# Bandit configuration. tests/ is not scanned (asserts and subprocess calls are expected there).
+exclude_dirs: [tests]

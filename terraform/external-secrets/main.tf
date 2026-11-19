@@ -95,6 +95,14 @@ resource "aws_iam_role_policy" "this" {
   policy = data.aws_iam_policy_document.this.json
 }
 
+# Only when Argo CD pulls charts from the ECR cache: the same role makes the ECR login that Argo CD uses.
+resource "aws_iam_role_policy_attachment" "ecr_pull" {
+  count = length(var.argocd_oci_repos) > 0 ? 1 : 0
+
+  role       = aws_iam_role.this.name
+  policy_arn = var.ecr_pull_policy_arn
+}
+
 resource "aws_eks_pod_identity_association" "this" {
   cluster_name    = var.cluster_name
   namespace       = var.namespace
@@ -117,6 +125,10 @@ resource "helm_release" "operator" {
     replicaCount = 1 # ASSUMPTION: 1 for a test. Use 2 + leaderElect=true in production.
 
     serviceAccount = { name = var.service_account }
+
+    # ghcr.io/external-secrets/external-secrets, through your ECR. "global.repository" is used by the operator, the
+    # webhook and the cert controller alike (they are all the same image).
+    global = { repository = "${var.ghcr_mirror}/external-secrets/external-secrets" }
 
     nodeSelector = var.node_selector
     tolerations  = var.tolerations
@@ -152,7 +164,8 @@ resource "helm_release" "config" {
     argocdRepoSecret = {
       enabled = var.argocd_repo_secret_enabled
     }
+    argocdOciRepos = var.argocd_oci_repos
   })]
 
-  depends_on = [time_sleep.webhooks_ready]
+  depends_on = [time_sleep.webhooks_ready, aws_iam_role_policy_attachment.ecr_pull]
 }

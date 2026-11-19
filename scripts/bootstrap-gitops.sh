@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs Argo CD, registers the repo, starts the "app of apps" and waits for every sync wave to finish.
+# Installs Argo CD (images from your ECR), starts the "app of apps" and waits for every sync wave to finish.
 # Runs from inside the VPC (the Kubernetes API is private) with the deploy role's AWS credentials.
 # Idempotent: running it again on a healthy cluster changes nothing.
 #
@@ -62,6 +62,17 @@ if [ -n "${ARGOCD_INSTALL_SHA256:-}" ] && [ "$actual" != "$ARGOCD_INSTALL_SHA256
   echo "install.yaml does not match ARGOCD_INSTALL_SHA256" >&2
   exit 1
 fi
+# Images: the install manifest names three public registries. Point them at your own ECR (the pull-through cache from
+# terraform/us-east-1/ecr.tf) so the cluster never pulls Argo CD, Dex or Redis from quay.io, ghcr.io or public.ecr.aws.
+# The checksum above is of the file as downloaded, before this rewrite.
+account="$(aws sts get-caller-identity --query Account --output text)"
+ecr="${account}.dkr.ecr.${REGION}.amazonaws.com"
+sed -i.bak -E "s#image: quay\.io/#image: ${ecr}/quay/#; s#image: ghcr\.io/#image: ${ecr}/ghcr/#; s#image: public\.ecr\.aws/#image: ${ecr}/ecr-public/#" "$manifest"
+rm -f "$manifest.bak"
+if grep -nE 'image: (quay\.io|ghcr\.io|public\.ecr\.aws)/' "$manifest"; then
+  echo "install.yaml still has images that would be pulled from a public registry (lines above); add them to the rewrite" >&2
+  exit 1
+fi
 # Server-side apply: the CRDs are too large for client-side apply.
 kubectl apply --server-side --force-conflicts -n argocd -f "$manifest"
 rm -f "$manifest"
@@ -80,9 +91,9 @@ if [ "$before" != "$after" ]; then
   kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=600s
 fi
 
-log "Registering OCI Helm registries and the root application"
-kubectl apply -f "$ROOT/gitops/bootstrap/repo-strimzi-oci.yaml"
-kubectl apply -f "$ROOT/gitops/bootstrap/repo-arc-oci.yaml"
+# The Argo CD logins for the OCI Helm registries (Strimzi, ARC) are not applied here: the platform layer creates them
+# through External Secrets, which renews the ECR login every 6 hours (a fixed password would expire after 12).
+log "Starting the root application"
 kubectl apply -f "$ROOT/gitops/bootstrap/root-app.yaml"
 
 # ---------------------------------------------------------------- wait for the waves
@@ -133,7 +144,7 @@ if [ -z "$bootstrap" ]; then
   exit 1
 fi
 echo "bootstrap: $bootstrap"
-aws ssm put-parameter --region "$REGION" --name /kafka-eks/kafka/bootstrap --type String --value "$bootstrap" --overwrite >/dev/null
+aws secretsmanager put-secret-value --region "$REGION" --secret-id /kafka-eks/config/kafka-bootstrap --secret-string "$bootstrap" >/dev/null
 
 log "Actions Runner Controller (optional: it is the fallback-to-nothing, not a blocker)"
 arc_ready=false
@@ -151,6 +162,6 @@ if [ "$arc_all_ok" = true ]; then
   fi
 fi
 echo "arc-ready=$arc_ready"
-aws ssm put-parameter --region "$REGION" --name /kafka-eks/ci/arc-ready --type String --value "$arc_ready" --overwrite >/dev/null
+aws secretsmanager put-secret-value --region "$REGION" --secret-id /kafka-eks/config/arc-ready --secret-string "$arc_ready" >/dev/null
 echo
 echo "bootstrap-gitops: done"

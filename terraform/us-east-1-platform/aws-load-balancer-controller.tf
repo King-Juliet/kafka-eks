@@ -9,6 +9,9 @@ module "aws_load_balancer_controller" {
   tolerations   = local.system_tolerations
   tags          = local.tags
 
+  # The controller image comes from your ECR copy of public.ecr.aws (layer 1). The chart comes from AWS's Helm repository.
+  public_ecr_mirror = local.ecr["ecr-public"]
+
   # The LB controller registers a webhook on every new Service. Install it only after Karpenter
   # (which creates a Service) is finished, so the two never race. It also needs the Gateway API
   # types to exist before it starts, or it leaves its Gateway support off.

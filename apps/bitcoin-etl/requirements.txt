@@ -1,0 +1,15 @@
+# Runtime dependencies for the ETL scripts and the lag publisher.
+# Installed on the instances from the wheelhouse that CD builds (no internet needed
+# at boot). Ranges, not pins: CD resolves them once per release and the exact
+# versions land in releases/<sha>/wheelhouse/ (plus constraints.txt).
+#
+# ASSUMPTION: the consumers set "group.protocol": "classic", which only newer
+# librdkafka builds know about. The >=2.12 floor below is a guess, not looked up.
+# The sandbox that built this repo had confluent-kafka 2.16.2; nothing here was
+# run against a real broker.
+confluent-kafka>=2.12
+psycopg2-binary>=2.9
+pandas>=2.2
+requests>=2.32
+python-dotenv>=1.0
+boto3>=1.35

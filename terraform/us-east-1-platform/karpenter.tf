@@ -7,6 +7,9 @@ module "karpenter" {
   node_selector = local.system_node_selector
   tolerations   = local.system_tolerations
 
+  # The charts and the controller image come from your ECR copy of public.ecr.aws (layer 1).
+  public_ecr_mirror = local.ecr["ecr-public"]
+
   ami_alias            = var.ami_alias
   associate_public_ip  = local.nodes_in_public_subnets
   node_root_volume_gib = var.node_root_volume_gib

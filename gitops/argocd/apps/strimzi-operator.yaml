@@ -1,5 +1,6 @@
 # Wave 0: the Strimzi operator (installs the Kafka CRDs and the controller that acts on them).
-# Pulled from the official OCI registry; pinned to 1.3.1.
+# The chart and every image come from YOUR ECR (a pull-through cache of quay.io), not from quay.io directly. Pinned to 1.3.1.
+# ACCOUNT_ID is your 12-digit AWS account id; `bash scripts/account_id.sh set <id>` replaces it everywhere (README step 4).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -10,12 +11,14 @@ metadata:
 spec:
   project: kafka
   source:
-    repoURL: quay.io/strimzi-helm
+    repoURL: 992382810653.dkr.ecr.us-east-1.amazonaws.com/quay/strimzi-helm
     chart: strimzi-kafka-operator
     targetRevision: 1.3.1
     helm:
       releaseName: strimzi
       valuesObject:
+        # Every image the operator starts (Kafka, entity operator, exporter...) comes from your ECR, not quay.io.
+        defaultImageRegistry: 992382810653.dkr.ecr.us-east-1.amazonaws.com/quay
         replicas: 1 # ASSUMPTION: 1 for a test. Production: 2 (leader election is already on).
         watchNamespaces:
           - kafka

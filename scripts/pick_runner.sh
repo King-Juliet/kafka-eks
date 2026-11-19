@@ -5,7 +5,7 @@
 #   pick_runner.sh finish    scales the EC2 bootstrap runner to 0 when ARC is ready; otherwise leaves it running
 #
 # The Kubernetes API is private, so these jobs need a runner inside the VPC:
-#   ARC  = runner pods in the cluster itself (permanent, scales to 0 when idle). Used once SSM /kafka-eks/ci/arc-ready
+#   ARC  = runner pods in the cluster itself (permanent, scales to 0 when idle). Used once the secret /kafka-eks/config/arc-ready
 #          is "true" (bootstrap-gitops.sh sets it after the ARC apps and their listener are up).
 #   EC2  = one small instance from an Auto Scaling Group (min 0, max 1). It is what builds the cluster the first time,
 #          before ARC exists. `pick` starts it when ARC is not ready.
@@ -24,7 +24,7 @@ EC2_LABELS='["self-hosted","vpc-bootstrap"]'
 
 arc_ready() {
   local v
-  v="$(aws ssm get-parameter --region "$REGION" --name /kafka-eks/ci/arc-ready --query Parameter.Value --output text 2>/dev/null || true)"
+  v="$(aws secretsmanager get-secret-value --region "$REGION" --secret-id /kafka-eks/config/arc-ready --query SecretString --output text 2>/dev/null || true)"
   [ "$v" = "true" ]
 }
 
@@ -58,7 +58,7 @@ cmd_pick() {
   local target
   if [ "$MODE" = arc ]; then
     target=arc
-    arc_ready || echo "pick_runner: WARNING MODE=arc but /kafka-eks/ci/arc-ready is not 'true'; the job waits for an ARC runner" >&2
+    arc_ready || echo "pick_runner: WARNING MODE=arc but /kafka-eks/config/arc-ready is not 'true'; the job waits for an ARC runner" >&2
   elif [ "$MODE" = ec2 ]; then
     target=ec2
   elif arc_ready; then

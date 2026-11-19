@@ -2,7 +2,7 @@
 # Publishes the ETL code as a release and rolls the ASG instances onto it.
 #   1. build   releases/<sha>/ = apps/bitcoin-etl (code) + wheelhouse (Python packages for Amazon Linux 2023)
 #   2. upload  to the scripts bucket (one folder per commit; old releases stay for rollback)
-#   3. point   SSM /kafka-eks/clients/release at <sha>  (instances read it when they boot)
+#   3. point   the secret /kafka-eks/config/clients-release at <sha>  (instances read it when they boot)
 #   4. roll    start an instance refresh on every ASG and wait for it
 #
 # Env: BUCKET (required), RELEASE (default: git sha), AWS_REGION (default us-east-1),
@@ -48,7 +48,7 @@ aws s3 sync --region "$REGION" --no-progress --delete "$OUT/" "s3://$BUCKET/rele
 aws s3api head-object --region "$REGION" --bucket "$BUCKET" --key "releases/$RELEASE/launcher.py" >/dev/null
 
 log "move the release pointer"
-aws ssm put-parameter --region "$REGION" --name /kafka-eks/clients/release --type String --value "$RELEASE" --overwrite >/dev/null
+aws secretsmanager put-secret-value --region "$REGION" --secret-id /kafka-eks/config/clients-release --secret-string "$RELEASE" >/dev/null
 
 log "roll the ASGs"
 ASG_JSON="${ASG_JSON:?ASG_JSON is required}"

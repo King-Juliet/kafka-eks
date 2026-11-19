@@ -13,6 +13,11 @@ variable "chart_version" {
   type        = string
 }
 
+variable "public_ecr_mirror" {
+  description = "Your ECR copy of public.ecr.aws: <account>.dkr.ecr.<region>.amazonaws.com/ecr-public (no scheme, no trailing slash). The Karpenter charts and the controller image are pulled from here, not from public.ecr.aws."
+  type        = string
+}
+
 variable "namespace" {
   type    = string
   default = "kube-system"

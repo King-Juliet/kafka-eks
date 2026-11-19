@@ -1,15 +1,10 @@
-# Where the ETL code lives for the Auto Scaling Groups. CD uploads one folder per Git commit:
-#
-#   releases/<git-sha>/producer/...      the producer script
-#   releases/<git-sha>/consumers/...     the three consumer scripts
-#   releases/<git-sha>/topics/...        topic admin scripts
-#   releases/<git-sha>/ops/...           lag publisher
-#   releases/<git-sha>/wheelhouse/...    Python packages (so instances need no internet to install them)
-#
-# Instances read the "current release" pointer from SSM (/kafka-eks/clients/release), copy that folder and run it.
-# Old releases stay (versioned bucket), so a rollback is just moving the pointer back.
+# A private S3 bucket with the safe defaults: no public access, owner-enforced objects (no ACLs), encryption at rest,
+# HTTPS only. Versioning is optional (versioning_enabled = false creates nothing). It knows nothing about what is stored
+# in it. Lifecycle rules are NOT here: they are the s3-lifecycle module, which a caller adds only if it wants them.
+# The caller decides the name, the encryption key and any extra access (see scripts-bucket.tf for an example).
 
 resource "aws_s3_bucket" "this" {
+  # checkov:skip=CKV2_AWS_61: lifecycle rules are the separate s3-lifecycle module, added by the caller; Checkov cannot follow that link across modules.
   bucket        = var.bucket_name
   force_destroy = var.force_destroy
 
@@ -33,7 +28,10 @@ resource "aws_s3_bucket_public_access_block" "this" {
   restrict_public_buckets = true
 }
 
+# Skipped when versioning_enabled = false: the bucket then keeps only the latest version of each object (the S3 default).
 resource "aws_s3_bucket_versioning" "this" {
+  count = var.versioning_enabled ? 1 : 0
+
   bucket = aws_s3_bucket.this.id
 
   versioning_configuration {
@@ -41,8 +39,6 @@ resource "aws_s3_bucket_versioning" "this" {
   }
 }
 
-# ASSUMPTION: S3-managed keys (SSE-S3). A CMK would also need kms:Decrypt on every instance role; the code in
-# this bucket is not secret (it is the same code that sits in Git), so the simpler option is used.
 resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
   bucket = aws_s3_bucket.this.id
 
@@ -50,33 +46,15 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
     bucket_key_enabled = true
 
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = var.kms_key_arn == null ? "AES256" : "aws:kms"
+      kms_master_key_id = var.kms_key_arn
     }
   }
-}
-
-resource "aws_s3_bucket_lifecycle_configuration" "this" {
-  bucket = aws_s3_bucket.this.id
-
-  rule {
-    id     = "expire-old-versions"
-    status = "Enabled"
-
-    filter {}
-
-    noncurrent_version_expiration {
-      noncurrent_days = var.noncurrent_version_days
-    }
-
-    abort_incomplete_multipart_upload {
-      days_after_initiation = 7
-    }
-  }
-
-  depends_on = [aws_s3_bucket_versioning.this]
 }
 
 data "aws_iam_policy_document" "this" {
+  source_policy_documents = var.extra_policy_json == null ? [] : [var.extra_policy_json]
+
   statement {
     sid       = "DenyInsecureTransport"
     effect    = "Deny"

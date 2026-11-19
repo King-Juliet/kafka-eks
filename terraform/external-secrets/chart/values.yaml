@@ -3,6 +3,12 @@ region: ""
 # Name of the cluster-wide store the rest of the repo refers to.
 storeName: aws-secrets-manager
 
+# Argo CD's OCI Helm registries served by the ECR cache: name -> URL without scheme, e.g.
+#   strimzi: 111122223333.dkr.ecr.us-east-1.amazonaws.com/quay/strimzi-helm
+# Each becomes an Argo CD repository Secret whose ECR login is renewed every 6 hours. Empty = none.
+argocdOciRepos: {}
+argocdNamespace: argocd
+
 # Optional: feed Argo CD its Git credentials from Secrets Manager.
 # Turn on AFTER Argo CD is installed (namespace must exist) and the secret has a value.
 argocdRepoSecret:

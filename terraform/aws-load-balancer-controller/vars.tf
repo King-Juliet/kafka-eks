@@ -13,7 +13,12 @@ variable "vpc_id" {
 }
 
 variable "chart_version" {
-  description = "aws-load-balancer-controller chart version."
+  description = "aws-load-balancer-controller chart version, fetched from https://aws.github.io/eks-charts. iam_policy.json in this folder must come from the same release tag."
+  type        = string
+}
+
+variable "public_ecr_mirror" {
+  description = "Your ECR copy of public.ecr.aws: <account>.dkr.ecr.<region>.amazonaws.com/ecr-public (no scheme, no trailing slash). The controller image is pulled from here."
   type        = string
 }
 

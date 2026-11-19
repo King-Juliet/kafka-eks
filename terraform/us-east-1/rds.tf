@@ -13,7 +13,7 @@ module "rds" {
   tags                = local.tags
 
   client_security_group_ids = {
-    etl_clients = module.kafka_clients.security_group_id
+    etl_clients = aws_security_group.etl_clients.id
     runner      = module.runner.security_group_id
     eks_nodes   = module.eks.node_security_group_id # ARC runner pods run the migration after ARC takes over
   }

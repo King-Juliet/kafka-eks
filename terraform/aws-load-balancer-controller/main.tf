@@ -38,6 +38,9 @@ resource "aws_eks_pod_identity_association" "this" {
   tags = var.tags
 }
 
+# The chart comes straight from AWS's own Helm repository. ECR's pull-through cache cannot copy a classic (HTTP) Helm
+# repository, so the chart is the one thing here that is fetched from outside, at apply time. The controller IMAGE
+# still comes from your ECR copy (public_ecr_mirror below). No file to download or commit.
 resource "helm_release" "this" {
   name       = "aws-load-balancer-controller"
   namespace  = var.namespace
@@ -46,6 +49,9 @@ resource "helm_release" "this" {
   version    = var.chart_version
 
   values = [yamlencode({
+    # public.ecr.aws/eks/aws-load-balancer-controller, through your ECR
+    image = { repository = "${var.public_ecr_mirror}/eks/aws-load-balancer-controller" }
+
     clusterName  = var.cluster_name
     region       = var.region # IMDS is not reachable from pods (hop limit 1), so these are explicit
     vpcId        = var.vpc_id

@@ -22,3 +22,8 @@ output "node_security_group_id" {
 output "cluster_security_group_id" {
   value = aws_security_group.cluster.id
 }
+
+output "node_role_name" {
+  description = "IAM role of the system node group (layer 1 attaches the ECR pull-through-cache policy to it)."
+  value       = aws_iam_role.node.name
+}

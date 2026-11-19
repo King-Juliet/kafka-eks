@@ -12,6 +12,27 @@ variable "chart_version" {
   type        = string
 }
 
+variable "ghcr_mirror" {
+  description = "Your ECR copy of ghcr.io: <account>.dkr.ecr.<region>.amazonaws.com/ghcr (no scheme, no trailing slash). The External Secrets image is pulled from here."
+  type        = string
+}
+
+variable "argocd_oci_repos" {
+  description = <<-EOT
+    OCI Helm registries Argo CD pulls charts from, served by the ECR cache: name -> URL without scheme,
+    e.g. { strimzi = "<host>/quay/strimzi-helm" }. For each one, External Secrets keeps an Argo CD repository secret
+    up to date with a fresh ECR login (an ECR login lasts 12 hours). Empty = none.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
+variable "ecr_pull_policy_arn" {
+  description = "IAM policy (from terraform/ecr-cache) that lets the External Secrets role fetch the ECR login and pull through the cache. Required when argocd_oci_repos is not empty."
+  type        = string
+  default     = ""
+}
+
 variable "namespace" {
   type    = string
   default = "external-secrets"

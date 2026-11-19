@@ -518,7 +518,7 @@ resource "aws_eks_pod_identity_association" "karpenter" {
 resource "helm_release" "crd" {
   name       = "karpenter-crd"
   namespace  = var.namespace
-  repository = "oci://public.ecr.aws/karpenter"
+  repository = "oci://${var.public_ecr_mirror}/karpenter"
   chart      = "karpenter-crd"
   version    = var.chart_version
 }
@@ -526,7 +526,7 @@ resource "helm_release" "crd" {
 resource "helm_release" "controller" {
   name       = "karpenter"
   namespace  = var.namespace
-  repository = "oci://public.ecr.aws/karpenter"
+  repository = "oci://${var.public_ecr_mirror}/karpenter"
   chart      = "karpenter"
   version    = var.chart_version
   skip_crds  = true
@@ -544,6 +544,8 @@ resource "helm_release" "controller" {
     }
 
     controller = {
+      # public.ecr.aws/karpenter/controller, through your ECR. The chart's pinned digest stays: the copy has the same digest.
+      image = { repository = "${var.public_ecr_mirror}/karpenter/controller" }
       # IMDS hop limit is 1, so pods cannot ask the instance for the region - tell Karpenter directly.
       env = [{ name = "AWS_REGION", value = var.region }]
       resources = {

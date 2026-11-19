@@ -1,0 +1,39 @@
+# Checkov: Terraform, Kubernetes manifests and GitHub workflows. Secrets are scanned by gitleaks (a second tool on the
+# same job would only add noise: it flags base64-looking words in comments).
+#
+# Every skip below has a reason. They are repo-wide, so they also hide the same finding for FUTURE resources: the
+# "known gaps" list in README.md says which ones to close first.
+directory:
+  - terraform
+  - gitops
+  - .github
+framework:
+  - terraform
+  - kubernetes
+  - github_actions
+skip-path:
+  - terraform/karpenter/chart # Helm chart templates (Go templates, not valid YAML before rendering)
+  - terraform/external-secrets/chart
+download-external-modules: false
+quiet: true
+compact: true
+
+skip-check:
+  # --- Checkov does not know about these yet (false positives)
+  - CKV_AWS_339 # "supported Kubernetes version": the list inside checkov 3.4.5 predates EKS 1.37
+  - CKV_AWS_25 # port 3389 "open to the world": the rule is node-security-group to itself, for ephemeral ports 1025-65535
+  - CKV_AWS_394 # pin availability zone ids: the data source is intentionally "all available zones", az_count picks how many
+  - CKV_GHA_7 # workflow_dispatch inputs: cd.yml only lets a person choose the runner and a Terraform debug level
+
+  # --- Deliberate trade-offs (revisit; see README "Known gaps")
+  - CKV_AWS_158 # CloudWatch log groups use the default AWS-owned encryption, not a customer key
+  - CKV_AWS_338 # log retention is 30 days (variable), not 1 year
+  - CKV_AWS_149 # Secrets Manager secrets use the AWS-managed key, not a customer key
+  - CKV2_AWS_57 # no automatic rotation: the values are a GitHub token and a DB password that the pipeline itself sets; the RDS master password IS rotated by RDS
+  - CKV2_AWS_64 # KMS keys use the default key policy (account root + IAM), no custom policy
+  - CKV2_AWS_34 # SSM parameters hold addresses and names, not secrets; SecureString would add KMS permissions to every ASG role
+  - CKV_AWS_130 # the public subnets (NAT, load balancers) assign public IPs on purpose; all workloads sit in private subnets
+  - CKV_AWS_18 # scripts bucket access logging (the bucket holds code releases only; versioned, TLS-only, not public)
+  - CKV_AWS_144 # scripts bucket cross-region replication
+  - CKV_AWS_145 # scripts bucket uses SSE-S3, not a KMS key (instances would need kms:Decrypt on top of s3:GetObject)
+  - CKV2_AWS_62 # scripts bucket event notifications: nothing listens to them

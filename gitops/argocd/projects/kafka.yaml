@@ -11,7 +11,7 @@ spec:
   description: Strimzi operator, Kafka cluster and its secrets
   sourceRepos:
     - https://github.com/King-Juliet/kafka-eks.git
-    - quay.io/strimzi-helm
+    - 992382810653.dkr.ecr.us-east-1.amazonaws.com/quay/strimzi-helm
   destinations:
     - server: https://kubernetes.default.svc
       namespace: kafka

@@ -2,6 +2,8 @@
 # 0 runners while idle; pods appear when a job is queued and disappear when it finishes.
 # Runner pods get NO AWS identity of their own. Jobs sign in to AWS by assuming the deploy role through
 # GitHub's OIDC (main branch only), the same way the GitHub-hosted jobs do.
+# The chart and the runner image come from YOUR ECR (a pull-through cache of ghcr.io), not from ghcr.io directly.
+# ACCOUNT_ID is your 12-digit AWS account id; `bash scripts/account_id.sh set <id>` replaces it everywhere (README step 4).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -12,7 +14,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    repoURL: 992382810653.dkr.ecr.us-east-1.amazonaws.com/ghcr/actions/actions-runner-controller-charts
     chart: gha-runner-scale-set
     targetRevision: 0.15.1
     helm:
@@ -35,7 +37,7 @@ spec:
               workload: general
             containers:
               - name: runner
-                image: ghcr.io/actions/actions-runner:latest # ASSUMPTION: unpinned; pin a version once it works
+                image: 992382810653.dkr.ecr.us-east-1.amazonaws.com/ghcr/actions/actions-runner:latest # ASSUMPTION: unpinned; pin a version once it works
                 command: ["/home/runner/run.sh"]
                 resources:
                   requests: { cpu: 500m, memory: 1Gi }

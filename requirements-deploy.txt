@@ -1,0 +1,4 @@
+# What the deploy jobs (CD) need on the runner: scripts/db_migrate.py talks to AWS and PostgreSQL.
+# scripts/release_clients.sh only needs pip itself (it downloads the ETL's wheels for the instances).
+boto3>=1.35
+psycopg2-binary>=2.9
