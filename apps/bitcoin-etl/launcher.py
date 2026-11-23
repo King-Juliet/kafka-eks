@@ -120,23 +120,29 @@ def _secured(base: type, overrides: Mapping[str, Any]) -> type:
     return Secured
 
 
-def patch_kafka(overrides: Mapping[str, Any]) -> None:
-    """Replace the client classes the scripts import with override-merging subclasses.
+def _merge_init(cls: type, overrides: Mapping[str, Any]) -> None:
+    """Wrap a pure-Python client's __init__ in place, so its module still names the original class."""
+    original = cls.__init__
 
-    Must run before a script executes its ``from confluent_kafka import ...``.
-    """
+    def __init__(self: Any, conf: Mapping[str, Any] | None = None, *args: Any, **kwargs: Any) -> None:
+        original(self, merge_conf(conf, overrides), *args, **kwargs)
+
+    cls.__init__ = __init__
+    setattr(cls, PATCH_MARK, True)
+
+
+def patch_kafka(overrides: Mapping[str, Any]) -> None:
+    """Merge the connection settings into every Kafka client the scripts create."""
     import confluent_kafka
     import confluent_kafka.admin as kafka_admin
 
-    for module, name in (
-        (confluent_kafka, "Producer"),
-        (confluent_kafka, "Consumer"),
-        (kafka_admin, "AdminClient"),
-    ):
-        current = getattr(module, name)
-        if getattr(current, PATCH_MARK, False):
-            continue
-        setattr(module, name, _secured(current, overrides))
+    for name in ("Producer", "Consumer"):
+        current = getattr(confluent_kafka, name)
+        if not getattr(current, PATCH_MARK, False):
+            setattr(confluent_kafka, name, _secured(current, overrides))
+
+    if not getattr(kafka_admin.AdminClient, PATCH_MARK, False):
+        _merge_init(kafka_admin.AdminClient, overrides)
 
 
 def alias_etl_modules(root: Path = ROOT) -> None:
