@@ -200,10 +200,12 @@ jobs:
         id: py
         run: |
           for p in python3.13 python3.12 python3.11; do
-            if command -v "$p" >/dev/null 2>&1; then
+            if command -v "$p" >/dev/null 2>&1 && "$p" -m venv "$RUNNER_TEMP/venv-probe" >/dev/null 2>&1; then
+              rm -rf "$RUNNER_TEMP/venv-probe"
               echo "path=$(command -v "$p")" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+            rm -rf "$RUNNER_TEMP/venv-probe"
           done
           echo "path=" >> "$GITHUB_OUTPUT"
 
