@@ -23,10 +23,25 @@ wait_until_empty() {
   echo "$what: gone"
 }
 
+strip_finalizers() {
+  local kind="$1"
+  { kubectl get "$kind" -A -o json 2>/dev/null || echo '{"items":[]}'; } |
+    jq -r '.items[] | "\(.metadata.namespace) \(.metadata.name)"' |
+    while read -r ns name; do
+      kubectl -n "$ns" patch "$kind" "$name" --type=merge -p '{"metadata":{"finalizers":null}}' >/dev/null || true
+    done
+}
+
 aws eks update-kubeconfig --region "$REGION" --name "$CLUSTER_NAME" >/dev/null
 
 kubectl -n argocd scale statefulset argocd-application-controller --replicas=0 || true
 kubectl -n argocd scale deployment argocd-applicationset-controller --replicas=0 || true
+
+for kind in pushsecrets.external-secrets.io externalsecrets.external-secrets.io; do
+  if kubectl get crd "$kind" >/dev/null 2>&1; then
+    kubectl delete "$kind" --all -A --ignore-not-found --timeout=2m || strip_finalizers "$kind"
+  fi
+done
 
 kubectl -n gateway delete gateway --all --ignore-not-found --timeout=10m
 kubectl delete httproute --all -A --ignore-not-found --timeout=5m
