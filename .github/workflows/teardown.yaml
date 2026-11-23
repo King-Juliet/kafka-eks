@@ -1,0 +1,164 @@
+name: teardown
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type destroy to delete everything this repo built
+        required: true
+        type: string
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: kafka-test
+  TF_VERSION: "1.15.8"
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+  TF_VAR_deploy_role_arn: ${{ vars.AWS_ROLE_ARN }}
+
+jobs:
+  runner:
+    name: start the in-VPC runner
+    if: inputs.confirm == 'destroy'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      labels: ${{ steps.pick.outputs.labels }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Sign in to AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Start the EC2 bootstrap runner
+        id: pick
+        env:
+          MODE: ec2
+          RUNNER_ASG: ${{ env.CLUSTER_NAME }}-ci-runner
+        run: bash scripts/pick_runner.sh pick
+
+  cluster:
+    name: empty the cluster, destroy layer 2
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: CLI tools
+        run: bash scripts/install_tools.sh
+      - name: Sign in to AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 7200
+      - name: Remove load balancers, Kafka and Karpenter nodes
+        run: bash scripts/capture.sh teardown-cluster bash scripts/teardown_cluster.sh
+      - name: Destroy layer 2
+        run: |
+          bash scripts/tf_run.sh teardown-l2-init -chdir=terraform/us-east-1-platform init -input=false -no-color
+          bash scripts/tf_run.sh teardown-l2-destroy -chdir=terraform/us-east-1-platform destroy -auto-approve -input=false -no-color
+      - name: Sign in again (only when something failed)
+        if: failure()
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Push state Terraform could not save (only when something failed)
+        if: failure()
+        run: |
+          f=terraform/us-east-1-platform/errored.tfstate
+          if [ -f "$f" ]; then
+            terraform -chdir=terraform/us-east-1-platform state push errored.tfstate && echo "state recovered from $f"
+          else
+            echo "no errored.tfstate: nothing to recover"
+          fi
+      - name: Upload logs (only when something failed)
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: failure-logs-teardown-cluster
+          path: |
+            tf-artifacts/
+            terraform/**/errored.tfstate
+          retention-days: 3
+          if-no-files-found: ignore
+
+  layer1:
+    name: destroy layer 1
+    needs: cluster
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Sign in to AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 7200
+      - name: Init
+        run: bash scripts/tf_run.sh teardown-l1-init -chdir=terraform/us-east-1 init -input=false -no-color
+      - name: Empty the release bucket (every version)
+        run: |
+          bucket="$(terraform -chdir=terraform/us-east-1 output -raw scripts_bucket)"
+          while :; do
+            batch="$(aws s3api list-object-versions --bucket "$bucket" --max-items 500 --output json | jq -c '{Objects: [((.Versions // []) + (.DeleteMarkers // []))[] | {Key, VersionId}], Quiet: true}')"
+            [ "$(jq '.Objects | length' <<<"$batch")" -gt 0 ] || break
+            aws s3api delete-objects --bucket "$bucket" --delete "$batch" >/dev/null
+          done
+          echo "emptied $bucket"
+      - name: Lift deletion protection (EKS, RDS)
+        run: bash scripts/tf_run.sh teardown-l1-unprotect -chdir=terraform/us-east-1 apply -auto-approve -input=false -no-color -var deletion_protection=false -var db_deletion_protection=false
+      - name: Destroy layer 1
+        run: bash scripts/tf_run.sh teardown-l1-destroy -chdir=terraform/us-east-1 destroy -auto-approve -input=false -no-color -var deletion_protection=false -var db_deletion_protection=false
+      - name: Sign in again (only when something failed)
+        if: failure()
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Push state Terraform could not save (only when something failed)
+        if: failure()
+        run: |
+          f=terraform/us-east-1/errored.tfstate
+          if [ -f "$f" ]; then
+            terraform -chdir=terraform/us-east-1 state push errored.tfstate && echo "state recovered from $f"
+          else
+            echo "no errored.tfstate: nothing to recover"
+          fi
+      - name: Upload logs (only when something failed)
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: failure-logs-teardown-layer1
+          path: |
+            tf-artifacts/
+            terraform/**/errored.tfstate
+          retention-days: 3
+          if-no-files-found: ignore
