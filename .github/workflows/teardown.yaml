@@ -75,6 +75,7 @@ jobs:
       - name: Destroy layer 2
         run: |
           bash scripts/tf_run.sh teardown-l2-init -chdir=terraform/us-east-1-platform init -input=false -no-color
+          terraform -chdir=terraform/us-east-1-platform state rm kubernetes_namespace_v1.argocd || true
           bash scripts/tf_run.sh teardown-l2-destroy -chdir=terraform/us-east-1-platform destroy -auto-approve -input=false -no-color
       - name: Sign in again (only when something failed)
         if: failure()

@@ -4,6 +4,10 @@ set -euo pipefail
 REGION="${AWS_REGION:-us-east-1}"
 CLUSTER_NAME="${CLUSTER_NAME:-kafka-test}"
 
+has_crd() {
+  kubectl get crd "$1" >/dev/null 2>&1
+}
+
 lb_services() {
   kubectl get svc -A -o json | jq -r '.items[] | select(.spec.type == "LoadBalancer") | "\(.metadata.namespace)/\(.metadata.name)"'
 }
@@ -38,15 +42,23 @@ kubectl -n argocd scale statefulset argocd-application-controller --replicas=0 |
 kubectl -n argocd scale deployment argocd-applicationset-controller --replicas=0 || true
 
 for kind in pushsecrets.external-secrets.io externalsecrets.external-secrets.io; do
-  if kubectl get crd "$kind" >/dev/null 2>&1; then
+  if has_crd "$kind"; then
     kubectl delete "$kind" --all -A --ignore-not-found --timeout=2m || strip_finalizers "$kind"
   fi
 done
 
-kubectl -n gateway delete gateway --all --ignore-not-found --timeout=10m
-kubectl delete httproute --all -A --ignore-not-found --timeout=5m
-kubectl -n kafka delete kafka --all --ignore-not-found --timeout=10m
-kubectl -n kafka delete kafkanodepool --all --ignore-not-found --timeout=10m
+if has_crd gateways.gateway.networking.k8s.io; then
+  kubectl delete gateways.gateway.networking.k8s.io --all -A --ignore-not-found --timeout=10m
+fi
+if has_crd httproutes.gateway.networking.k8s.io; then
+  kubectl delete httproutes.gateway.networking.k8s.io --all -A --ignore-not-found --timeout=5m
+fi
+if has_crd kafkas.kafka.strimzi.io; then
+  kubectl -n kafka delete kafkas.kafka.strimzi.io --all --ignore-not-found --timeout=10m
+fi
+if has_crd kafkanodepools.kafka.strimzi.io; then
+  kubectl -n kafka delete kafkanodepools.kafka.strimzi.io --all --ignore-not-found --timeout=10m
+fi
 wait_until_empty "Kafka pods" 900 kubectl -n kafka get pods -o name
 
 lb_services | while read -r svc; do
@@ -56,5 +68,9 @@ wait_until_empty "LoadBalancer services" 900 lb_services
 
 kubectl -n kafka delete pvc --all --ignore-not-found --timeout=5m
 
-kubectl delete nodepool --all --ignore-not-found --timeout=15m
-wait_until_empty "Karpenter nodes" 900 kubectl get nodeclaims -o name
+if has_crd nodepools.karpenter.sh; then
+  kubectl delete nodepools.karpenter.sh --all --ignore-not-found --timeout=15m
+fi
+if has_crd nodeclaims.karpenter.sh; then
+  wait_until_empty "Karpenter nodes" 900 kubectl get nodeclaims.karpenter.sh -o name
+fi
